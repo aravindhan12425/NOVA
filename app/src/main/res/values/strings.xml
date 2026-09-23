@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Nova AI</string>
+    <string name="accessibility_service_description">Nova AI requires accessibility access to automate WhatsApp and interact with system UI on your behalf.</string>
+</resources>
