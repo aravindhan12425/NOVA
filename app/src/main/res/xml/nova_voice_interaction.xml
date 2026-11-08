@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets Nova be chosen as the phone's digital assistant (long-press power / home) -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.assistant.nova.assist.NovaSessionService"
+    android:recognitionService="com.assistant.nova.assist.NovaRecognitionService"
+    android:settingsActivity="com.assistant.nova.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />

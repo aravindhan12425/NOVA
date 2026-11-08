@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">Nova AI</string>
-    <string name="accessibility_service_description">Nova AI requires accessibility access to automate WhatsApp and interact with system UI on your behalf.</string>
+    <string name="widget_talk">Talk to Nova</string>
+    <string name="widget_description">One tap and Nova listens</string>
+    <string name="accessibility_service_description">Nova uses this only while carrying out your voice commands: it taps Quick Settings tiles (Wi-Fi, Bluetooth, mobile data, airplane mode…), presses WhatsApp\'s Send button, opens apps, locks the screen and takes screenshots. It does not record or send what is on your screen.</string>
 </resources>

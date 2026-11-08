@@ -8,3 +8,13 @@
 .externalNativeBuild
 .cxx
 app/build/
+.kotlin/
+*.log
+
+# Secrets: never commit these (signing key for release builds, API keys)
+keystore/
+*.jks
+*.keystore
+secrets.properties
+*.apk
+*.aab

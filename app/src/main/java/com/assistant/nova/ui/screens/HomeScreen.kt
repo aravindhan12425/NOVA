@@ -1,136 +1,309 @@
 package com.assistant.nova.ui.screens
 
 import android.Manifest
-import android.content.pm.PackageManager
-import android.content.Intent
-import android.provider.Settings
-import android.content.ComponentName
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.assistant.nova.ui.components.GlowingMic
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.material.icons.filled.PlayArrow
+import com.assistant.nova.core.UsageTracker
+import com.assistant.nova.core.NovaPrefs
+import com.assistant.nova.core.NovaState
+import com.assistant.nova.core.NovaState.Status
+import com.assistant.nova.core.device.DeviceProfile
+import com.assistant.nova.services.NovaListenerService
+import com.assistant.nova.ui.components.NovaOrb
 import com.assistant.nova.ui.theme.NeonBlue
-import com.assistant.nova.viewmodels.AssistantViewModel
-import com.assistant.nova.services.NovaAccessibilityService
+import com.assistant.nova.ui.theme.SurfaceColor
+import com.assistant.nova.ui.theme.TextSecondary
+import com.assistant.nova.ui.theme.Warn
 
 @Composable
-fun HomeScreen(
-    wakeWord: String,
-    onSettingsClick: () -> Unit,
-    assistantViewModel: AssistantViewModel = viewModel()
-) {
+fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities: () -> Unit, onRoutines: () -> Unit) {
     val context = LocalContext.current
-    val voiceState by assistantViewModel.voiceState.collectAsState()
-    val lastResponse by assistantViewModel.lastResponse.collectAsState()
-    
-    var hasPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-        )
+    val prefs = remember { NovaPrefs(context) }
+    val status by NovaState.status.collectAsStateWithLifecycle()
+    val partial by NovaState.partial.collectAsStateWithLifecycle()
+    val history by NovaState.history.collectAsStateWithLifecycle()
+    var alwaysOn by remember { mutableStateOf(prefs.alwaysOn) }
+    var missing by remember { mutableIntStateOf(0) }
+
+    var usage by remember { mutableStateOf(UsageTracker.today(context)) }
+    val capacity = remember { UsageTracker.batteryCapacityMah(context) }
+
+    var callAssistant by remember { mutableStateOf(prefs.callAssistant) }
+
+    LifecycleResumeEffect(Unit) {
+        missing = DeviceProfile.missingRequired(context)
+        alwaysOn = prefs.alwaysOn
+        callAssistant = prefs.callAssistant
+        usage = UsageTracker.today(context)
+        onPauseOrDispose {}
     }
 
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = { isGranted ->
-            hasPermission = isGranted
+    val permissions = remember {
+        buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
         }
-    )
+    }
+    fun startListening() {
+        prefs.alwaysOn = true
+        alwaysOn = true
+        NovaListenerService.start(context)
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result[Manifest.permission.RECORD_AUDIO] == true) startListening()
+        missing = DeviceProfile.missingRequired(context)
+    }
+    fun ensureStarted() {
+        if (DeviceProfile.granted(context, Manifest.permission.RECORD_AUDIO)) startListening()
+        else launcher.launch(permissions.toTypedArray())
+    }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        IconButton(
-            onClick = onSettingsClick,
-            modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
-        ) {
-            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = NeonBlue)
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Nova", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onCapabilities) {
+                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "What Nova can do", tint = NeonBlue)
+            }
+            IconButton(onClick = onDeviceCheck) {
+                BadgedBox(badge = { if (missing > 0) Badge { Text("$missing") } }) {
+                    Icon(Icons.Default.Build, contentDescription = "Device check", tint = NeonBlue)
+                }
+            }
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = NeonBlue)
+            }
         }
-        
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text("$wakeWord AI", color = Color.White, fontSize = 32.sp)
-            
-            Spacer(modifier = Modifier.height(64.dp))
-            
-            Box(
-                modifier = Modifier
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        if (hasPermission) {
-                            assistantViewModel.toggleListening()
-                        } else {
-                            launcher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    },
-                contentAlignment = Alignment.Center
+
+        if (missing > 0) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .background(Warn.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                    .clickable(onClick = onDeviceCheck)
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                GlowingMic(isListening = voiceState.isListening)
-            }
-            
-            Spacer(modifier = Modifier.height(64.dp))
-            
-            val displayText = when {
-                lastResponse.isNotEmpty() -> lastResponse
-                voiceState.spokenText.isNotEmpty() -> voiceState.spokenText
-                voiceState.isListening -> "Listening..."
-                else -> "Tap to speak"
-            }
-
-            val displayColor = if (lastResponse.isNotEmpty()) NeonBlue else Color.White
-
-            Text(
-                text = displayText,
-                color = displayColor,
-                fontSize = if (lastResponse.isNotEmpty()) 24.sp else 20.sp,
-                modifier = Modifier.padding(horizontal = 32.dp)
-            )
-
-            if (voiceState.error != null) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = Warn, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
                 Text(
-                    text = voiceState.error ?: "",
-                    color = Color.Red,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(top = 16.dp)
+                    "$missing setup step${if (missing > 1) "s" else ""} needed for Nova to work 24/7. Tap to fix.",
+                    color = Warn, fontSize = 14.sp,
                 )
             }
+        }
 
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // Force Open Accessibility Button
-            Button(
+        Column(
+            Modifier.fillMaxWidth().padding(top = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            NovaOrb(
+                status = status.status,
                 onClick = {
-                    try {
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                    } catch (e: Exception) {
-                        // Fallback
+                    if (!NovaListenerService.isRunning) ensureStarted()
+                    else NovaListenerService.start(context, NovaListenerService.ACTION_TALK)
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                when (status.status) {
+                    Status.OFF -> "Nova is off"
+                    Status.STARTING -> "Starting…"
+                    Status.LISTENING -> status.detail.ifBlank { "Listening for the wake word" }
+                    Status.HEARING -> "I'm listening…"
+                    Status.THINKING -> "Working on it…"
+                    Status.SPEAKING -> status.detail
+                    Status.PAUSED -> status.detail
+                    Status.ERROR -> status.detail
+                },
+                color = Color.White, fontSize = 18.sp, textAlign = TextAlign.Center,
+            )
+            val sub = when {
+                partial.isNotBlank() -> "“$partial”"
+                status.status == Status.THINKING -> "“${status.detail}”"
+                status.status == Status.OFF -> "Tap the circle or turn on Always listening"
+                else -> "Tap the circle to talk without the wake word"
+            }
+            Text(sub, color = TextSecondary, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 20.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Always listening", color = Color.White, fontSize = 16.sp)
+                Text("Hears the wake word 24/7, even offline", color = TextSecondary, fontSize = 13.sp)
+            }
+            Switch(
+                checked = alwaysOn,
+                onCheckedChange = { on ->
+                    if (on) ensureStarted() else {
+                        prefs.alwaysOn = false
+                        alwaysOn = false
+                        NovaListenerService.stop(context)
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray.copy(alpha = 0.5f)),
-                modifier = Modifier.padding(bottom = 16.dp)
-            ) {
-                Text("Fix Automation (Accessibility)", color = NeonBlue, fontSize = 12.sp)
+            )
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .clickable(onClick = onCapabilities)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("What Nova can do", color = Color.White, fontSize = 16.sp)
+                Text("Every feature, with examples you can try", color = TextSecondary, fontSize = 13.sp)
+            }
+            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = NeonBlue)
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .clickable(onClick = onRoutines)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Routines", color = Color.White, fontSize = 16.sp)
+                Text("“Good night”, “I'm driving”… one phrase, many actions", color = TextSecondary, fontSize = 13.sp)
+            }
+            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = NeonBlue)
+        }
+
+        // Battery report (an estimate: Android doesn't share exact per-app numbers with apps)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .clickable {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                val pct = usage.estimatedPercent(capacity)
+                Text(
+                    "Battery today: " + if (pct < 0.1) "under 0.1%" else "about ${"%.1f".format(pct)}%",
+                    color = Color.White, fontSize = 16.sp,
+                )
+                Text(
+                    "Listened ${"%.1f".format(usage.micMs / 3_600_000.0)} h · ${usage.wakes} wake-ups · ${usage.commands} commands. " +
+                        "Tap for Android's exact figure (Battery usage).",
+                    color = TextSecondary, fontSize = 13.sp,
+                )
+            }
+        }
+
+        // Call assistant: off = completely normal calls; on = announce callers, answer/reject, in-call commands
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Call assistant", color = Color.White, fontSize = 16.sp)
+                Text(
+                    if (callAssistant) "Announces callers, answer / reject by voice" else "Off: calls ring normally",
+                    color = TextSecondary, fontSize = 13.sp,
+                )
+            }
+            Switch(checked = callAssistant, onCheckedChange = { callAssistant = it; prefs.callAssistant = it })
+        }
+
+        Text(
+            "Recent",
+            color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 20.dp, bottom = 6.dp),
+        )
+        if (history.isEmpty()) {
+            Text(
+                "Try: “Hey Jarvis, turn on the flashlight”, “call mom”, “set an alarm for 6 30 am”, “what can you do”.",
+                color = TextSecondary, fontSize = 14.sp,
+            )
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            items(history.reversed(), key = { it.time }) { ex ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(SurfaceColor, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                ) {
+                    Text("“${ex.heard}”", color = Color.White, fontSize = 15.sp)
+                    Text(ex.reply, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+                }
             }
         }
     }

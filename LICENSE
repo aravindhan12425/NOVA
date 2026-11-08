@@ -1,0 +1,11 @@
+Copyright (c) 2026 aravindhan12425. All rights reserved.
+
+This software and its source code are proprietary. No part of it may be copied,
+modified, distributed, published, sublicensed or sold, in source or binary form,
+without prior written permission from the copyright holder.
+
+Third-party components bundled with this app keep their own licences:
+  - openWakeWord models (app/src/main/assets/wakeword): CC BY-NC-SA 4.0
+  - Vosk speech model (app/src/main/assets/model-en-in): Apache 2.0
+  - WordNet 3.0 (app/src/main/assets/dictionary): WordNet licence, see LICENSE-wordnet.txt
+  - ONNX Runtime: MIT

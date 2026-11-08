@@ -2,6 +2,7 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <color name="neon_blue">#00F3FF</color>
-    <color name="dark_bg">#0A0A0B</color>
+    <!-- Keep in sync with ui/theme/Theme.kt -->
+    <color name="neon_blue">#FF00E5FF</color>
+    <color name="dark_bg">#FF0B0D12</color>
 </resources>
