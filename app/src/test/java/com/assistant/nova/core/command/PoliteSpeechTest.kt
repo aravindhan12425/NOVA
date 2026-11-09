@@ -39,6 +39,13 @@ class PoliteSpeechTest {
         assertEquals(Command.Message("krishna", "come fast bro", Channel.WHATSAPP), p("message krishna saying come fast bro"))
     }
 
+    @Test fun `goodnight as one word is the routine`() {
+        val routines = listOf("good night", "good morning")
+        assertEquals(Command.RunRoutine("good night"), CommandParser.parse("goodnight", "unlock", routines))
+        assertEquals(Command.RunRoutine("good morning"), CommandParser.parse("Goodmorning", "unlock", routines))
+        assertEquals(Command.RunRoutine("good night"), CommandParser.parse("good night", "unlock", routines))
+    }
+
     @Test fun `small talk`() {
         assertEquals(Command.Chat("You're welcome!"), p("thank you nova"))
         assertEquals(Command.Chat("You're welcome!"), p("thanks"))

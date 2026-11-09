@@ -72,6 +72,7 @@ object TextNormalizer {
             .replace(Regex("[^a-z0-9: ]"), " ")
         s = collapse(s)
         s = s.replace(Regex("\\bwhats app\\b"), "whatsapp")
+        s = s.replace(Regex("\\bgood(night|morning|evening|afternoon)\\b"), "good $1")
         s = s.replace(Regex("\\bwhat sapp\\b"), "whatsapp")
 
         var changed = true

@@ -19,9 +19,16 @@ class VoiceId(private val context: Context) {
 
     val isEnrolled: Boolean get() = prefs.contains("profile")
 
+    companion object {
+        const val MAX_THRESHOLD = 0.55f
+    }
+
     /** Score needed to count as the user's voice; set from their own enrolment recordings. */
+    // Enrolment recordings (quiet room, same distance) match each other far better than everyday
+    // speech does, so the bar is capped at MAX: the owner's real commands score ~0.55-0.75, other
+    // people's voices usually under 0.35.
     var threshold: Float
-        get() = prefs.getFloat("threshold", 0.5f)
+        get() = prefs.getFloat("threshold", 0.5f).coerceAtMost(MAX_THRESHOLD)
         set(v) = prefs.edit().putFloat("threshold", v.coerceIn(0.3f, 0.8f)).apply()
 
     private fun profile(): FloatArray? =
@@ -37,7 +44,7 @@ class VoiceId(private val context: Context) {
     fun enroll(prints: List<FloatArray>): Float {
         val profile = SpeakerEmbedder.average(prints)
         val own = prints.map { SpeakerEmbedder.similarity(profile, it) }
-        val t = (own.average().toFloat() - 0.2f).coerceIn(0.4f, 0.7f)
+        val t = (own.average().toFloat() - 0.2f).coerceIn(0.4f, MAX_THRESHOLD)
         prefs.edit().putString("profile", profile.joinToString(",")).apply()
         threshold = t
         return t

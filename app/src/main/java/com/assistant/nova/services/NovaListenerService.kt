@@ -517,6 +517,14 @@ class NovaListenerService : Service() {
         private var speaking = false
         private var quietMs = 0
         private var speechMs = 0
+        /** Words Vosk already finalised inside this sentence (it ends a phrase after ~0.5 s of quiet). */
+        private val finished = StringBuilder()
+
+        private fun feed(c: ShortArray, n: Int) {
+            if (rec.acceptWaveForm(c, n)) {
+                vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished.append(' ').append(it) }
+            }
+        }
 
         fun step(buf: ShortArray, n: Int): String? {
             var sum = 0.0
@@ -525,29 +533,37 @@ class NovaListenerService : Service() {
             val chunk = buf.copyOf(n)
             if (!speaking) {
                 preroll.addLast(chunk); if (preroll.size > 4) preroll.removeFirst()
-                if (rms < 350) return null
-                speaking = true; quietMs = 0; speechMs = 0; audio.clear()
-                for (c in preroll) { rec.acceptWaveForm(c, c.size); c.forEach { audio += it } }
+                if (rms < 300) return null
+                speaking = true; quietMs = 0; speechMs = 0; audio.clear(); finished.clear()
+                for (c in preroll) { feed(c, c.size); c.forEach { audio += it } }
                 preroll.clear()
                 return null
             }
-            rec.acceptWaveForm(chunk, n)
+            feed(chunk, n)
             if (audio.size < 16_000 * 8) chunk.forEach { audio += it }
             speechMs += 80
-            quietMs = if (rms < 250) quietMs + 80 else 0
+            quietMs = if (rms < 220) quietMs + 80 else 0
             if (quietMs < 800 && speechMs < 7_000) return null
             // Sentence finished
             speaking = false
             // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova
-            val text = vosk.text(rec.finalResult)
+            // (Before, only finalResult was read, which is empty when Vosk had already ended the
+            // phrase by itself: then every hands-free command was silently lost.)
+            val text = TextNormalizer.collapse("$finished ${vosk.text(rec.finalResult)}")
+            finished.clear()
             return if (text.isNotBlank() && isOwnersCommand(text, audio.toShortArray())) text else null
         }
 
         private fun isOwnersCommand(text: String, sound: ShortArray): Boolean {
-            if (TextNormalizer.basic(text).split(' ').size < 2) return false // "next", "pause"… too easy to say by accident
             val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
+            // One word ("next", "pause") is too easy to say by accident; a routine's own name is fine
+            val words = TextNormalizer.basic(text).split(' ').size
+            if (words < 2 && commands.none { it is Command.RunRoutine }) return false
             // Small talk ("thank you") is never acted on without the wake word: it may be meant for someone else
-            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) return false
+            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) {
+                Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else "$words words, "}not a command")
+                return false
+            }
             val score = runCatching { voiceId.score(sound) }.getOrNull()
             val ok = score != null && score >= voiceId.threshold
             Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}voice match ${score?.let { "%.2f".format(it) }} " +
