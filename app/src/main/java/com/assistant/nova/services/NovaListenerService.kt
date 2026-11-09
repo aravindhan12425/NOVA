@@ -506,7 +506,8 @@ class NovaListenerService : Service() {
         private fun isOwnersCommand(text: String, sound: ShortArray): Boolean {
             if (TextNormalizer.basic(text).split(' ').size < 2) return false // "next", "pause"… too easy to say by accident
             val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
-            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel }) return false
+            // Small talk ("thank you") is never acted on without the wake word: it may be meant for someone else
+            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) return false
             val score = runCatching { voiceId.score(sound) }.getOrNull()
             val ok = score != null && score >= voiceId.threshold
             Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}voice match ${score?.let { "%.2f".format(it) }} " +
@@ -752,7 +753,7 @@ class NovaListenerService : Service() {
                     handleCommand(engine, next, depth + 1)
                 }
             }
-            return commands.any { it !is Command.Unknown && it !is Command.Cancel }
+            return commands.any { it !is Command.Unknown && it !is Command.Cancel && it !is Command.Chat }
         } finally {
             abandonFocus(focus)
             engine?.reset()

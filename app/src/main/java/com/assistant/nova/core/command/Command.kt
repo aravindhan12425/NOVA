@@ -137,6 +137,9 @@ sealed interface Command {
 
     data object Help : Command
 
+    /** Small talk ("thank you", "good morning", "how are you"): Nova just answers with [reply]. */
+    data class Chat(val reply: String) : Command
+
     data object Cancel : Command
 
     data class Unknown(val text: String) : Command

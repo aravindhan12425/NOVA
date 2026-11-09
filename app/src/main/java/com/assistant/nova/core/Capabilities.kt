@@ -44,6 +44,15 @@ object Capabilities {
                     listOf(Requirement.MIC),
                 ),
                 Capability(
+                    "Talk naturally",
+                    "No need to give orders: ask the way you'd ask a friend. Nova also answers “thank you”, " +
+                        "“good morning” and “how are you”.",
+                    ex(
+                        "can you please switch on wifi", "would you mind playing Believer",
+                        "could you play songs from English music", "play it again",
+                    ) + tryEx("thank you", "how are you"),
+                ),
+                Capability(
                     "Several things at once",
                     "Join commands with “and” or “then”.",
                     ex("turn on wifi and bluetooth", "torch on then volume up"),

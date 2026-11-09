@@ -141,8 +141,29 @@ object CommandParser {
         return sb.toString().ifEmpty { null }
     }
 
+    // ── Small talk ──────────────────────────────────────────────────────────
+
+    private val CHAT: List<Pair<Regex, String>> = listOf(
+        "thank you|thanks|thank u|thanks a lot|thanks a ton|thank you so much|thank you very much|thanks so much|" +
+            "cheers|nandri|romba nandri|thanks da|thank you da" to "You're welcome!",
+        "good morning" to "Good morning!",
+        "good afternoon" to "Good afternoon!",
+        "good evening" to "Good evening!",
+        "good night" to "Good night! Sleep well.",
+        "how are you|how are you doing|how r u|hows it going|how is it going|how do you do|whats up|sup" to
+            "I'm doing great, thanks for asking. What can I do for you?",
+        "who are you|what is your name|whats your name|what are you|tell me about yourself" to "I'm Nova, your assistant.",
+        "hello|hello there|hi there|hai|vanakkam|hello hello" to "Hi! What can I do for you?",
+        "good job|well done|nice work|great job|awesome|super|you are awesome|youre awesome|good girl|good boy" to "Thank you!",
+        "sorry|my bad" to "No problem.",
+    ).map { (alts, reply) -> Regex("^(?:$alts)$") to reply }
+
+    /** "thank you", "good morning"… Null if [b] is anything else. */
+    fun parseChat(b: String): Command.Chat? = CHAT.firstOrNull { it.first.matches(b) }?.let { Command.Chat(it.second) }
+
     private fun parseBasic(b: String): Command {
         if (b in CANCEL) return Command.Cancel
+        parseChat(b)?.let { return it }
         if (b == "help" || b.contains("what can you do") || b.contains("what all can you do") ||
             b == "commands" || b.contains("what are your commands")
         ) return Command.Help
@@ -194,7 +215,7 @@ object CommandParser {
         Regex("^(?:turn on|switch on|enable|put on|use)(?: the)? (?:speaker|speakerphone|loudspeaker|loud speaker)$|^(?:speaker|speakerphone|loudspeaker)(?: on| mode)?$|^put (?:it |the call |this )?on (?:speaker|loudspeaker)$") to InCallAction.SPEAKER_ON,
         Regex("^(?:turn off|switch off|disable)(?: the)? (?:speaker|speakerphone|loudspeaker)$|^(?:speaker|speakerphone|loudspeaker) off$|^take (?:it )?off speaker$") to InCallAction.SPEAKER_OFF,
         Regex("^(?:put|place)(?: the| this)?(?: call| it)? on hold$|^hold(?: the| this)?(?: call)?$") to InCallAction.HOLD,
-        Regex("^(?:unhold|resume|take off hold|un hold)(?: the| this)?(?: call)?$|^take (?:the call |it )?off hold$") to InCallAction.UNHOLD,
+        Regex("^(?:unhold|take off hold|un hold)(?: the| this)?(?: call)?$|^(?:resume|continue) (?:the |this )?call$|^take (?:the call |it )?off hold$") to InCallAction.UNHOLD,
     )
 
     // ── Camera ──────────────────────────────────────────────────────────────
@@ -331,6 +352,15 @@ object CommandParser {
     private fun parsePlayMusic(b: String): Command? {
         val m = PLAY_RE.matchEntire(b) ?: return null
         var rest = m.groupValues[1].trim()
+        // "play believer again", "play it one more time"
+        val again = Regex("(?:^| )(?:again|once again|one more time|once more)$")
+        if (again.containsMatchIn(rest)) {
+            rest = again.replace(rest, "").trim()
+            // "play it again", "play that song again": start the current song over
+            if (Regex("^(?:it|that|this|the same|the same song|same song|(?:the|that|this) (?:song|track|one))?$").matches(rest)) {
+                return Command.Media(MediaAction.PREVIOUS)
+            }
+        }
         if (rest.isEmpty()) return if (b.startsWith("shuffle")) Command.PlayMusic() else null
         if (RESUME_WORDS.matches(rest)) return null // "play music" = press play
         if (NOT_A_TITLE.any { rest == it || rest.startsWith("$it ") }) return null // "play next song"

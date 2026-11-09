@@ -11,14 +11,51 @@ import java.util.Locale
  */
 object TextNormalizer {
 
+    // Polite ways of asking go first (longest first): "would you mind turning on wifi" -> "turn on wifi"
     private val fillerPrefixes = listOf(
+        "i was wondering if you could", "i wonder if you could", "would you be so kind as to",
+        "would you be kind enough to", "could you be kind enough to", "be kind enough to",
+        "is it possible for you to", "is it possible to", "do me a favour and", "do me a favor and",
+        "would you mind", "do you mind", "could you possibly", "can you possibly",
+        "i would like you to", "id like you to", "if you dont mind", "if you can",
+        "would you please", "will you please", "please can you", "please could you",
+        "dei nova", "dey nova", "day nova",
         "hey jarvis", "hi jarvis", "ok jarvis", "okay jarvis", "jarvis",
         "hey nova", "hi nova", "ok nova", "okay nova", "nova",
         "i want you to", "i need you to", "i want to", "can you please", "could you please",
         "can you", "could you", "would you", "will you", "can u",
         "hey", "ok", "okay", "please", "kindly", "just", "now",
     )
-    private val fillerSuffixes = listOf("please", "for me", "right now", "now", "thanks", "thank you")
+    private val fillerSuffixes = listOf(
+        "please", "for me", "right now", "now", "thanks", "thank you", "if you dont mind", "if you can",
+        "if possible", "nova", "jarvis", "dei", "da", "bro", "buddy",
+    )
+
+    private val WAKE_NAMES = setOf("nova", "jarvis")
+    private val MESSAGE_START = Regex("^(?:send|message|text|whatsapp|sms|reply|msg)\\b")
+    private val MESSAGE_WORDS = Regex("\\b(?:saying|say|that says|with message|telling)\\b")
+    private val WAKE_MENTION = Regex("\\b(?:hey|hi|ok|okay|dei|dey|day|without|say|saying) (?:nova|jarvis)$")
+    private fun isMessage(s: String) = MESSAGE_START.containsMatchIn(s) || MESSAGE_WORDS.containsMatchIn(s)
+
+    /** "would you mind PLAYING believer" -> "play believer": the command verb as the parser expects it. */
+    private val gerunds = mapOf(
+        "playing" to "play", "calling" to "call", "turning" to "turn", "switching" to "switch",
+        "setting" to "set", "opening" to "open", "sending" to "send", "putting" to "put", "making" to "make",
+        "taking" to "take", "stopping" to "stop", "pausing" to "pause", "reading" to "read", "telling" to "tell",
+        "giving" to "give", "searching" to "search", "increasing" to "increase", "decreasing" to "decrease",
+        "reducing" to "reduce", "raising" to "raise", "lowering" to "lower", "skipping" to "skip",
+        "starting" to "start", "enabling" to "enable", "disabling" to "disable", "messaging" to "message",
+        "texting" to "text", "dialing" to "dial", "dialling" to "dial", "ringing" to "ring", "closing" to "close",
+        "launching" to "launch", "showing" to "show", "finding" to "find", "checking" to "check",
+        "adding" to "add", "noting" to "note", "writing" to "write", "navigating" to "navigate", "going" to "go",
+        "unlocking" to "unlock", "resuming" to "resume", "shuffling" to "shuffle", "muting" to "mute",
+        "unmuting" to "unmute", "answering" to "answer", "rejecting" to "reject", "ending" to "end",
+        "recording" to "record", "defining" to "define", "spelling" to "spell", "calculating" to "calculate",
+        "converting" to "convert", "looking" to "look", "googling" to "google", "identifying" to "identify",
+        "capturing" to "capture", "cancelling" to "cancel", "canceling" to "cancel", "deleting" to "delete",
+        "clearing" to "clear", "running" to "run", "dimming" to "dim", "keeping" to "keep", "getting" to "get",
+        "bringing" to "bring", "reminding" to "remind", "silencing" to "silence",
+    )
 
     /** Lowercase, punctuation removed, "hey jarvis"/"please"-style filler removed. */
     fun basic(raw: String): String {
@@ -48,12 +85,18 @@ object TextNormalizer {
                     s = s.removePrefix("$p ").trim(); changed = true; break
                 }
             }
+            // A message keeps its own ending: "message Krishna saying see you da" sends "see you da"
+            if (isMessage(s)) continue
             for (p in fillerSuffixes) {
+                // "listen without hey jarvis" talks about the wake word: keep it
+                if (p in WAKE_NAMES && WAKE_MENTION.containsMatchIn(s)) continue
                 if (s.endsWith(" $p")) {
                     s = s.removeSuffix(" $p").trim(); changed = true
                 }
             }
         }
+        val first = s.substringBefore(' ')
+        gerunds[first]?.let { s = it + s.removePrefix(first) }
         return s
     }
 

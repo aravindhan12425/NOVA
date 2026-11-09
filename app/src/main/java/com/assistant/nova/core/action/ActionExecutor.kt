@@ -171,7 +171,8 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         }
         is Command.Ringer -> ringer(cmd.mode)
         is Command.Brightness -> brightness(cmd)
-        is Command.Media -> media(cmd.action)
+        is Command.Media -> if (cmd.action == MediaAction.PLAY) playOrShuffle() else media(cmd.action)
+        is Command.Chat -> Reply(cmd.reply)
         is Command.Alarm -> alarm(cmd.hour, cmd.minute, cmd.label)
         is Command.AlarmIn -> alarmIn(cmd.seconds, cmd.label)
         is Command.Timer -> timer(cmd.seconds)
@@ -567,6 +568,22 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
     }
 
     // ── Media ───────────────────────────────────────────────────────────────
+
+    /**
+     * "Play" / "play some music": resume whatever was paused (Nova's own songs first).
+     * If nothing resumes because nothing was paused, shuffle the songs on the phone.
+     */
+    private suspend fun playOrShuffle(): Reply {
+        if (player.current != null) {
+            if (!player.isPlaying) player.resume()
+            return Reply("", "Playing")
+        }
+        if (audio.isMusicActive) return Reply("", "Playing")
+        media(MediaAction.PLAY)
+        delay(1200)
+        if (audio.isMusicActive) return Reply("", "Playing")
+        return playMusic(Command.PlayMusic())
+    }
 
     private fun media(action: MediaAction): Reply {
         val code = when (action) {
