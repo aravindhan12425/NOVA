@@ -24,6 +24,18 @@ class MusicLibrary(private val context: Context) {
     private var cachedAt = 0L
 
     companion object {
+        /**
+         * False for folders that hold recordings rather than songs: call / voice recorder files
+         * (e.g. "Music/Recordings/Standard Recordings/") and app media like WhatsApp voice notes,
+         * which Android still marks as "music". Without this, shuffle could play a recording.
+         */
+        fun isSongFolder(relativePath: String?): Boolean {
+            val p = relativePath.orEmpty().lowercase()
+            return !p.startsWith("android/") &&
+                listOf("recording", "recorder", "callrec", "whatsapp", "voice note", "voice_note", "notification", "ringtone")
+                    .none { it in p }
+        }
+
         val PERMISSION: String =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO
             else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -57,6 +69,7 @@ class MusicLibrary(private val context: Context) {
             "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC",
         )?.use { c ->
             while (c.moveToNext()) {
+                if (!isSongFolder(c.getString(4))) continue
                 val id = c.getLong(0)
                 tracks += Track(
                     id = id,
