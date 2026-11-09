@@ -15,9 +15,13 @@ object WakeWords {
     private const val MEL = "melspectrogram.onnx"
     private const val EMB = "embedding_model.onnx"
 
+    const val DEI_NOVA = "dei_nova"
+
     fun label(id: String): String = when (id) {
         JARVIS -> "Hey Jarvis"
         NOVA -> "Hey Nova"
+        // Trained from the spelling "day nova" so the practice voices say Tamil "டேய்"
+        DEI_NOVA, "day_nova", "dey_nova" -> "Dei Nova"
         else -> id.split('_').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
     }
 
@@ -36,7 +40,7 @@ object WakeWords {
             when (it) {
                 JARVIS -> prefs.wakeJarvis
                 NOVA -> prefs.wakeNova
-                else -> true
+                else -> prefs.wakeEnabled(it)
             }
         }
 

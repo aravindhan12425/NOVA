@@ -73,6 +73,7 @@ fun SettingsScreen(onBack: () -> Unit, onVoiceId: () -> Unit = {}) {
     var directMode by remember { mutableStateOf(prefs.directMode) }
     var directWhen by remember { mutableStateOf(prefs.directWhen) }
     var unlockVoiceId by remember { mutableStateOf(prefs.unlockNeedsVoiceId) }
+    var wakeVoiceId by remember { mutableStateOf(prefs.wakeNeedsVoiceId) }
     var enrolled by remember { mutableStateOf(VoiceId(context).isEnrolled) }
     LifecycleResumeEffect(Unit) {
         enrolled = VoiceId(context).isEnrolled
@@ -153,6 +154,13 @@ fun SettingsScreen(onBack: () -> Unit, onVoiceId: () -> Unit = {}) {
                 if (WakeWords.NOVA in bundled) "Works offline" else "Not trained yet. See “Train Hey Nova” in the README.",
                 nova && WakeWords.NOVA in bundled, enabled = WakeWords.NOVA in bundled,
             ) { nova = it; prefs.wakeNova = it }
+            // Any other trained wake word in the app, e.g. "Dei Nova"
+            for (id in bundled.keys.filter { it != WakeWords.JARVIS && it != WakeWords.NOVA }) {
+                var on by remember(id) { mutableStateOf(prefs.wakeEnabled(id)) }
+                CheckRow(WakeWords.label(id), "Your own trained wake word, works offline", on, enabled = true) {
+                    on = it; prefs.setWakeEnabled(id, it)
+                }
+            }
         }
 
         Header("Hands-free")
@@ -194,6 +202,11 @@ fun SettingsScreen(onBack: () -> Unit, onVoiceId: () -> Unit = {}) {
                 }
             }
             if (enrolled) {
+                SwitchRow(
+                    "Wake word must be my voice",
+                    "Nova ignores its wake word when someone else (or the TV) says it",
+                    wakeVoiceId,
+                ) { wakeVoiceId = it; prefs.wakeNeedsVoiceId = it }
                 SwitchRow(
                     "Voice unlock needs my voice",
                     "Your PIN alone isn't enough: it must be said in your voice",

@@ -577,6 +577,17 @@ class NovaListenerService : Service() {
             for ((word, v) in scores) {
                 if (v >= threshold) {
                     Log.i(TAG, "Wake word $word (score %.2f, needed %.2f)".format(v, threshold))
+                    // Short or everyday wake words: only wake for the owner's voice
+                    if (prefs.wakeNeedsVoiceId && voiceId.isEnrolled) {
+                        val match = runCatching { voiceId.score(engine.recentAudio(1.6)) }.getOrNull()
+                        // A wake word is short, so allow a little less than for full sentences
+                        val needed = voiceId.threshold - 0.1f
+                        if (match == null || match < needed) {
+                            Log.i(TAG, "Wake word ignored: voice match ${match?.let { "%.2f".format(it) }} (needs %.2f)".format(needed))
+                            engine.reset()
+                            break
+                        }
+                    }
                     usage.countWake()
                     return Trigger.WAKE
                 }

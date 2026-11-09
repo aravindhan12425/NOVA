@@ -23,6 +23,15 @@ class NovaPrefs(context: Context) {
         get() = p.getBoolean("wake_nova", true)
         set(v) = p.edit().putBoolean("wake_nova", v).apply()
 
+    /** Any other wake word bundled in the app (e.g. a trained "Dei Nova"): on unless switched off. */
+    fun wakeEnabled(id: String): Boolean = p.getBoolean("wake_$id", true)
+    fun setWakeEnabled(id: String, on: Boolean) = p.edit().putBoolean("wake_$id", on).apply()
+
+    /** With a voice profile, the wake word only counts when it's said in the owner's voice. */
+    var wakeNeedsVoiceId: Boolean
+        get() = p.getBoolean("wake_voice_id", true)
+        set(v) = p.edit().putBoolean("wake_voice_id", v).apply()
+
     /** Wake-word score needed to trigger (0.3 = very sensitive … 0.8 = strict). */
     var threshold: Float
         get() = p.getFloat("threshold", 0.5f)

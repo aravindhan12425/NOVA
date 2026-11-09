@@ -235,6 +235,13 @@ class WakeWordEngine(
         rawCount = minOf(rawCount + chunk.size, RAW_KEEP)
     }
 
+    /** The last [seconds] of audio heard (16-bit samples), e.g. to check whose voice said the wake word. */
+    fun recentAudio(seconds: Double): ShortArray {
+        val n = minOf(rawCount, (SAMPLE_RATE * seconds).toInt())
+        val f = lastRaw(n)
+        return ShortArray(n) { f[it].toInt().coerceIn(-32768, 32767).toShort() }
+    }
+
     private fun lastRaw(n: Int): FloatArray =
         FloatArray(n) { i -> raw[(rawPos - n + i + RAW_KEEP) % RAW_KEEP] }
 
