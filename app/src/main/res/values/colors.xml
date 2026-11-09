@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="black">#FF000000</color>
+    <color name="icon_background">#FFF04848</color>
     <color name="white">#FFFFFFFF</color>
     <!-- Keep in sync with ui/theme/Theme.kt -->
     <color name="neon_blue">#FF00E5FF</color>
