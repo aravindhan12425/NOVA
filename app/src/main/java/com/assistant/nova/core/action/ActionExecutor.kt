@@ -59,6 +59,7 @@ import com.assistant.nova.core.command.TextNormalizer
 import com.assistant.nova.core.device.DeviceProfile
 import com.assistant.nova.core.dictionary.Dictionary
 import com.assistant.nova.core.media.MusicLibrary
+import com.assistant.nova.core.media.SongTags
 import com.assistant.nova.core.media.NovaPlayer
 import com.assistant.nova.services.NovaAccessibilityService
 import kotlinx.coroutines.Dispatchers
@@ -1096,11 +1097,16 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
                         if (folders.isNotEmpty()) " Your music folders include ${folders.joinToString(", ")}." else "",
                 )
             }
+            SongTags.requested(cmd.query ?: cmd.folder.orEmpty())?.let { kind ->
+                return Reply("I couldn't find any ${kind.replaceFirstChar { it.uppercase() }} songs on your phone.")
+            }
             val what = listOfNotNull(cmd.query, cmd.artist?.let { "by $it" }).joinToString(" ")
             return Reply(if (what.isEmpty()) "I couldn't find any songs on your phone." else "I couldn't find $what in your music.")
         }
         val first = queue.first()
+        val kind = if (cmd.artist == null) SongTags.requested(cmd.query ?: cmd.folder.orEmpty()) else null
         val speech = when {
+            kind != null -> "Playing ${kind.replaceFirstChar { it.uppercase() }} songs, ${queue.size} of them, shuffled."
             fromFolder -> "Playing ${queue.size} song${if (queue.size > 1) "s" else ""} from ${first.folder}."
             cmd.query == null && cmd.artist == null && cmd.folder == null -> "Shuffling your music."
             cmd.query == null -> "Playing songs by ${first.artist}."

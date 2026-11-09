@@ -498,7 +498,8 @@ class NovaListenerService : Service() {
      * always / while charging), and no music or call is going on.
      */
     private fun directActive(): Boolean {
-        if (!prefs.directMode || !voiceId.isEnrolled || audioManager.isMusicActive || onCall) return false
+        // (While music plays it stays on, but only for music commands: see isOwnersCommand)
+        if (!prefs.directMode || !voiceId.isEnrolled || onCall) return false
         return when (prefs.directWhen) {
             NovaPrefs.DIRECT_ALWAYS -> true
             NovaPrefs.DIRECT_CHARGING -> getSystemService(BatteryManager::class.java).isCharging
@@ -543,7 +544,8 @@ class NovaListenerService : Service() {
             if (audio.size < 16_000 * 8) chunk.forEach { audio += it }
             speechMs += 80
             quietMs = if (rms < 220) quietMs + 80 else 0
-            if (quietMs < 800 && speechMs < 7_000) return null
+            val maxSpeech = if (audioManager.isMusicActive) 3_500 else 7_000
+            if (quietMs < 800 && speechMs < maxSpeech) return null
             // Sentence finished
             speaking = false
             // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova.
@@ -571,9 +573,19 @@ class NovaListenerService : Service() {
             val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
             // One word ("next", "pause") is too easy to say by accident; a routine's own name is fine
             val words = TextNormalizer.basic(text).split(' ').size
-            if (words < 2 && commands.none { it is Command.RunRoutine }) return false
+            // While music plays: only music commands ("pause", "next song", "decrease the sound"),
+            // and then a single word is fine. The song's own singer won't pass the voice check.
+            val music = audioManager.isMusicActive
+            val musicOnly = commands.all { it is Command.Media || it is Command.Volume || it is Command.Cancel }
+            if (music && !musicOnly) {
+                if (verboseLogs) Log.i(TAG, "Direct: music playing, ignored “$text”")
+                return false
+            }
+            if (words < 2 && commands.none { it is Command.RunRoutine } && !(music && musicOnly)) return false
             // Small talk ("thank you") is never acted on without the wake word: it may be meant for someone else
-            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) {
+            // ("stop" is fine while music plays: it pauses the music)
+            val stopMusic = music && commands.all { it is Command.Cancel }
+            if (!stopMusic && commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) {
                 Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else "$words words, "}not a command")
                 return false
             }

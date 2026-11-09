@@ -746,8 +746,16 @@ object CommandParser {
     private fun percentFrom(n: Int, w: Set<String>): Int =
         if ("percent" in w || n > 10) n.coerceIn(0, 100) else (n * 10).coerceIn(0, 100)
 
+    private val VOLUME_CHANGE = setOf(
+        "up", "down", "increase", "decrease", "reduce", "raise", "lower", "less", "more", "max", "maximum",
+        "minimum", "louder", "quieter", "softer", "higher",
+    )
+
     private fun parseVolume(tokens: List<String>, w: Set<String>): Command? {
-        val isVolume = "volume" in w || "sound" in w && ("up" in w || "down" in w) ||
+        // "decrease the sound", "reduce the music", "song volume up": sound words + a change word
+        val soundWord = "sound" in w || "audio" in w || "music" in w || "song" in w
+        val changeWord = w.any { it in VOLUME_CHANGE }
+        val isVolume = "volume" in w || (soundWord && changeWord) ||
             "louder" in w || "quieter" in w || "softer" in w || "mute" in w || "unmute" in w
         if (!isVolume) return null
         val stream = when {

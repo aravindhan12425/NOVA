@@ -12,7 +12,16 @@ import androidx.core.content.ContextCompat
 import com.assistant.nova.core.command.FuzzyMatcher
 
 /** [folder] = the folder the file is in, e.g. "English music" for Audio/English music/song.mp3. */
-data class Track(val id: Long, val title: String, val artist: String, val album: String, val uri: Uri, val folder: String = "")
+data class Track(
+    val id: Long,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val uri: Uri,
+    val folder: String = "",
+    /** Language / kind guessed from the song's details, e.g. {tamil} or {anime} (see [SongTags]). */
+    val tags: Set<String> = emptySet(),
+)
 
 /**
  * Songs stored on the phone, from Android's media library. That library already covers
@@ -117,14 +126,16 @@ class MusicLibrary(private val context: Context) {
             while (c.moveToNext()) {
                 if (!isSongFolder(c.getString(4))) continue
                 val id = c.getLong(0)
+                val title = c.getString(1).orEmpty()
+                val artist = c.getString(2)?.takeUnless { it == MediaStore.UNKNOWN_STRING }.orEmpty()
+                val album = c.getString(3).orEmpty()
+                // "Music/English music/" -> "English music"
+                val folder = c.getString(4)?.trim('/')?.substringAfterLast('/').orEmpty()
                 tracks += Track(
-                    id = id,
-                    title = c.getString(1).orEmpty(),
-                    artist = c.getString(2)?.takeUnless { it == MediaStore.UNKNOWN_STRING }.orEmpty(),
-                    album = c.getString(3).orEmpty(),
+                    id = id, title = title, artist = artist, album = album,
                     uri = ContentUris.withAppendedId(collection, id),
-                    // "Music/English music/" -> "English music"
-                    folder = c.getString(4)?.trim('/')?.substringAfterLast('/').orEmpty(),
+                    folder = folder,
+                    tags = SongTags.of(title, artist, album, folder),
                 )
             }
         }
@@ -141,6 +152,12 @@ class MusicLibrary(private val context: Context) {
     fun find(query: String?, artist: String?, folder: String? = null): List<Track> {
         val tracks = all()
         if (tracks.isEmpty()) return emptyList()
+        // "play a Tamil song", "play anime songs": every song of that language / kind, shuffled
+        if (artist.isNullOrBlank()) {
+            SongTags.requested(query ?: folder.orEmpty())?.let { tag ->
+                return tracks.filter { tag in it.tags }.shuffled()
+            }
+        }
         if (!folder.isNullOrBlank()) {
             // "play songs from English music folder": that folder's songs, in order
             val f = matchFolder(folder, folders().keys) ?: return emptyList()
