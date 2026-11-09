@@ -140,6 +140,22 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         }
         is Command.CallControl -> callControl(cmd.action, cmd.message)
         is Command.Camera -> camera(cmd)
+        is Command.SetHandsFree -> {
+            val on = when (cmd.state) {
+                OnOff.ON -> true
+                OnOff.OFF -> false
+                OnOff.TOGGLE -> !prefs.directMode
+            }
+            if (on && !com.assistant.nova.core.voiceid.VoiceId(context).isEnrolled) {
+                Reply("First teach me your voice: open Nova, Settings, Voice ID.")
+            } else {
+                prefs.directMode = on
+                Reply(
+                    if (on) "Hands-free is on. Just say a command, no Hey Jarvis needed."
+                    else "Hands-free is off. Say Hey Jarvis first again.",
+                )
+            }
+        }
         is Command.SetCallAssistant -> {
             val on = when (cmd.state) {
                 OnOff.ON -> true
@@ -1048,14 +1064,28 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         if (!music.hasPermission()) {
             return Reply("I need permission to see your music. Open Nova, go to Device check and allow Music and audio.")
         }
-        val queue = withContext(Dispatchers.IO) { music.find(cmd.query, cmd.artist) }
+        var fromFolder = cmd.folder != null
+        val queue = withContext(Dispatchers.IO) {
+            music.find(cmd.query, cmd.artist, cmd.folder).ifEmpty {
+                // "songs of Anirudh" isn't a folder: try it as a song, artist or album name
+                if (cmd.folder != null) { fromFolder = false; music.find(cmd.folder, null) } else emptyList()
+            }
+        }
         if (queue.isEmpty()) {
+            if (cmd.folder != null) {
+                val folders = withContext(Dispatchers.IO) { music.folders().keys.take(4) }
+                return Reply(
+                    "I couldn't find a music folder called ${cmd.folder}." +
+                        if (folders.isNotEmpty()) " Your music folders include ${folders.joinToString(", ")}." else "",
+                )
+            }
             val what = listOfNotNull(cmd.query, cmd.artist?.let { "by $it" }).joinToString(" ")
             return Reply(if (what.isEmpty()) "I couldn't find any songs on your phone." else "I couldn't find $what in your music.")
         }
         val first = queue.first()
         val speech = when {
-            cmd.query == null && cmd.artist == null -> "Shuffling your music."
+            fromFolder -> "Playing ${queue.size} song${if (queue.size > 1) "s" else ""} from ${first.folder}."
+            cmd.query == null && cmd.artist == null && cmd.folder == null -> "Shuffling your music."
             cmd.query == null -> "Playing songs by ${first.artist}."
             first.artist.isNotBlank() -> "Playing ${first.title} by ${first.artist}."
             else -> "Playing ${first.title}."

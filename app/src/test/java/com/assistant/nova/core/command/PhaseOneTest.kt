@@ -51,6 +51,18 @@ class PhaseOneTest {
         }
     }
 
+    @Test fun `music folders and hands-free switch`() {
+        assertEquals(Command.PlayMusic(folder = "english music"), p("play musics from files audio english music"))
+        assertEquals(Command.PlayMusic(folder = "english music"), p("play music from Files-Audio-English music"))
+        assertEquals(Command.PlayMusic(folder = "tamil"), p("play songs in my tamil folder"))
+        assertEquals(Command.PlayMusic(folder = "english music"), p("play english music folder"))
+        assertEquals(Command.PlayMusic(artist = "anirudh"), p("play songs by Anirudh"))
+        assertEquals(Command.PlayMusic(), p("play my songs"))
+        assertEquals(Command.SetHandsFree(OnOff.ON), p("hands free on"))
+        assertEquals(Command.SetHandsFree(OnOff.OFF), p("Hey Jarvis turn off hands-free mode"))
+        assertEquals(Command.SetHandsFree(OnOff.ON), p("listen without hey jarvis"))
+    }
+
     @Test fun `camera`() {
         assertEquals(Command.Camera(CameraAction.PHOTO), p("take a photo"))
         assertEquals(Command.Camera(CameraAction.PHOTO), p("Hey Jarvis click a picture"))

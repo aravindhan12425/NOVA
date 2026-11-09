@@ -149,6 +149,7 @@ object CommandParser {
 
         if (IDENTIFY_RES.any { it.matches(b) }) return Command.IdentifySong
         parseCallAssistantSwitch(b)?.let { return it }
+        parseHandsFreeSwitch(b)?.let { return it }
         parseCamera(b)?.let { return it }
         parseCallControl(b)?.let { return it }
         parseNotes(b)?.let { return it }
@@ -222,6 +223,23 @@ object CommandParser {
         val off = w.any { it in setOf("off", "disable", "stop", "deactivate") }
         val on = w.any { it in setOf("on", "enable", "start", "activate") }
         return Command.SetCallAssistant(
+            when {
+                off && !on -> OnOff.OFF
+                on && !off -> OnOff.ON
+                else -> OnOff.TOGGLE
+            },
+        )
+    }
+
+    private val HANDS_FREE = Regex("\\b(?:hands free|handsfree|hands-free|no wake word|without (?:hey )?jarvis|direct mode|direct commands)\\b")
+
+    /** "hands-free on", "turn off hands free mode", "listen without hey jarvis". */
+    private fun parseHandsFreeSwitch(b: String): Command? {
+        if (!HANDS_FREE.containsMatchIn(b)) return null
+        val w = b.split(' ')
+        val off = w.any { it in setOf("off", "disable", "stop", "deactivate") }
+        val on = w.any { it in setOf("on", "enable", "start", "activate", "listen") }
+        return Command.SetHandsFree(
             when {
                 off && !on -> OnOff.OFF
                 on && !off -> OnOff.ON
@@ -317,6 +335,11 @@ object CommandParser {
         if (RESUME_WORDS.matches(rest)) return null // "play music" = press play
         if (NOT_A_TITLE.any { rest == it || rest.startsWith("$it ") }) return null // "play next song"
         if (LIBRARY_RE.matches(rest)) return Command.PlayMusic()
+
+        // "play music from Files audio English music", "play songs in my Tamil folder", "play English music folder"
+        Regex("^(?:(?:my |the |all |all my |some )?(?:songs|music|musics|tracks|audio|mp3s?|files) )?(?:from|in|inside|of) (?:my |the )?(?:files? )?(?:audio )?(.+?)(?: folder)?$")
+            .matchEntire(rest)?.let { return Command.PlayMusic(folder = it.groupValues[1].trim()) }
+        Regex("^(?:my |the |all )?(.+?) folder$").matchEntire(rest)?.let { return Command.PlayMusic(folder = it.groupValues[1].trim()) }
 
         Regex("^(?:songs|music|something|anything|tracks) by (.+)$").matchEntire(rest)?.let {
             return Command.PlayMusic(artist = it.groupValues[1].trim())

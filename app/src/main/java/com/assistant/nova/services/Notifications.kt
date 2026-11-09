@@ -113,6 +113,7 @@ object Notifications {
             .setSmallIcon(R.drawable.ic_stat_nova)
             .setContentTitle(title)
             .setContentText(artist.ifBlank { "Nova" })
+            .setSubText("Playing in Nova")
             .setContentIntent(openApp(context))
             .setDeleteIntent(mediaAction(context, NovaListenerService.ACTION_MEDIA_STOP, 24))
             .setVisibility(Notification.VISIBILITY_PUBLIC)

@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.assistant.nova.core.NovaPrefs
 import com.assistant.nova.core.command.TextNormalizer
+import com.assistant.nova.core.voiceid.VoiceId
+import androidx.compose.foundation.clickable
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.assistant.nova.core.speech.Speaker
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -50,7 +53,7 @@ import com.assistant.nova.ui.theme.Warn
 
 /** Settings take effect immediately; the listening service reads them on its next cycle. */
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onVoiceId: () -> Unit = {}) {
     val context = LocalContext.current
     val prefs = remember { NovaPrefs(context) }
     val bundled = remember { WakeWords.bundled(context) }
@@ -66,6 +69,15 @@ fun SettingsScreen(onBack: () -> Unit) {
     var boot by remember { mutableStateOf(prefs.startOnBoot) }
     var browser by remember { mutableStateOf(prefs.browser) }
     var afterCommand by remember { mutableStateOf(prefs.afterCommand) }
+    var followOn by remember { mutableStateOf(prefs.followOn) }
+    var directMode by remember { mutableStateOf(prefs.directMode) }
+    var directWhen by remember { mutableStateOf(prefs.directWhen) }
+    var unlockVoiceId by remember { mutableStateOf(prefs.unlockNeedsVoiceId) }
+    var enrolled by remember { mutableStateOf(VoiceId(context).isEnrolled) }
+    LifecycleResumeEffect(Unit) {
+        enrolled = VoiceId(context).isEnrolled
+        onPauseOrDispose {}
+    }
     var callAssistant by remember { mutableStateOf(prefs.callAssistant) }
     var announceCalls by remember { mutableStateOf(prefs.announceCalls) }
     var listenDuringCalls by remember { mutableStateOf(prefs.listenDuringCalls) }
@@ -141,6 +153,53 @@ fun SettingsScreen(onBack: () -> Unit) {
                 if (WakeWords.NOVA in bundled) "Works offline" else "Not trained yet. See “Train Hey Nova” in the README.",
                 nova && WakeWords.NOVA in bundled, enabled = WakeWords.NOVA in bundled,
             ) { nova = it; prefs.wakeNova = it }
+        }
+
+        Header("Hands-free")
+        Card {
+            SwitchRow(
+                "Keep listening after a command",
+                "For 15 s after each command, just say the next one: no “Hey Jarvis” needed",
+                followOn,
+            ) { followOn = it; prefs.followOn = it }
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onVoiceId).padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Voice ID", color = Color.White, fontSize = 15.sp)
+                    Text(
+                        if (enrolled) "Set up: Nova knows your voice. Tap to test or redo." else "Not set up: teach Nova your voice (1 minute)",
+                        color = TextSecondary, fontSize = 13.sp,
+                    )
+                }
+                Text(if (enrolled) "✓" else "Set up", color = NeonBlue, fontSize = 15.sp)
+            }
+            SwitchRow(
+                "Talk without “Hey Jarvis”",
+                if (enrolled) "While the screen is on, just say a command (“call Krishna”). Only your voice works; " +
+                    "calls and messages wait a moment so you can say “no”. Uses more battery." else "Set up Voice ID first",
+                directMode && enrolled,
+            ) { if (enrolled) { directMode = it; prefs.directMode = it } }
+            if (enrolled && directMode) {
+                Text("Listen without “Hey Jarvis”:", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp, top = 4.dp))
+                Radio("While the screen is on", "Best balance of battery and convenience", directWhen == NovaPrefs.DIRECT_SCREEN_ON) {
+                    directWhen = NovaPrefs.DIRECT_SCREEN_ON; prefs.directWhen = directWhen
+                }
+                Radio("Always", "Also with the screen off. Uses the most battery", directWhen == NovaPrefs.DIRECT_ALWAYS) {
+                    directWhen = NovaPrefs.DIRECT_ALWAYS; prefs.directWhen = directWhen
+                }
+                Radio("Only while charging", "On your desk or in the car: no battery worry", directWhen == NovaPrefs.DIRECT_CHARGING) {
+                    directWhen = NovaPrefs.DIRECT_CHARGING; prefs.directWhen = directWhen
+                }
+            }
+            if (enrolled) {
+                SwitchRow(
+                    "Voice unlock needs my voice",
+                    "Your PIN alone isn't enough: it must be said in your voice",
+                    unlockVoiceId,
+                ) { unlockVoiceId = it; prefs.unlockNeedsVoiceId = it }
+            }
         }
 
         Header("Wake-word sensitivity")

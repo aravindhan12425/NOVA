@@ -20,6 +20,7 @@ import com.assistant.nova.ui.screens.CapabilitiesScreen
 import com.assistant.nova.ui.screens.DeviceCheckScreen
 import com.assistant.nova.ui.screens.HomeScreen
 import com.assistant.nova.ui.screens.RoutinesScreen
+import com.assistant.nova.ui.screens.VoiceIdScreen
 import com.assistant.nova.ui.screens.SettingsScreen
 import com.assistant.nova.ui.theme.NovaAITheme
 import kotlinx.coroutines.delay
@@ -56,7 +57,10 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("device") { DeviceCheckScreen(onBack = { nav.popBackStack() }) }
-                        composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
+                        composable("settings") {
+                            SettingsScreen(onBack = { nav.popBackStack() }, onVoiceId = { nav.navigate("voiceid") })
+                        }
+                        composable("voiceid") { VoiceIdScreen(onBack = { nav.popBackStack() }) }
                     }
                 }
             }

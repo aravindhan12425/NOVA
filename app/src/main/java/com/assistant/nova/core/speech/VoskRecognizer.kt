@@ -54,11 +54,19 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
      * Listens on an already-open [mic] until the user finishes a sentence.
      * Gives up after [silenceStartMs] if nobody starts talking, or after [maxMs] in total.
      */
+    /** A fresh streaming recognizer for the no-wake-word mode (caller closes it). */
+    suspend fun newRecognizer(): Recognizer = Recognizer(load(), 16_000f).also { unloadJob?.cancel() }
+
+    /** Pull the text out of a Vosk JSON result. */
+    fun text(json: String, key: String = "text"): String = field(json, key)
+
     suspend fun listen(
         mic: Mic,
         onPartial: (String) -> Unit,
         maxMs: Long = 8_000,
         silenceStartMs: Long = 4_500,
+        /** Receives the raw audio as it's heard (used to check the speaker's voice). */
+        capture: ((ShortArray, Int) -> Unit)? = null,
     ): String {
         val m = load()
         unloadJob?.cancel()
@@ -72,6 +80,7 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
                     while (isActive) {
                         val n = mic.read(buf)
                         if (n <= 0) break
+                        capture?.invoke(buf, n)
                         if (rec.acceptWaveForm(buf, n)) {
                             val t = field(rec.result, "text")
                             if (t.isNotBlank()) {

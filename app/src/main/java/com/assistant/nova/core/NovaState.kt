@@ -17,6 +17,14 @@ object NovaState {
     private val _status = MutableStateFlow(UiStatus(Status.OFF))
     val status: StateFlow<UiStatus> = _status.asStateFlow()
 
+    /** The song Nova's own player is on (null when it isn't playing anything). */
+    data class NowPlaying(val title: String, val artist: String, val folder: String, val playing: Boolean, val position: Int, val count: Int)
+
+    val nowPlaying = MutableStateFlow<NowPlaying?>(null)
+
+    /** True while the "Teach Nova my voice" screen is recording: the listening service steps aside. */
+    val enrolling = MutableStateFlow(false)
+
     /** Words recognized so far while the user is still talking. */
     val partial = MutableStateFlow("")
 

@@ -92,6 +92,9 @@ sealed interface Command {
      */
     data class Camera(val action: CameraAction, val seconds: Int? = null) : Command
 
+    /** "hands-free on / off": the no-wake-word mode. */
+    data class SetHandsFree(val state: OnOff) : Command
+
     /** "turn on / off call assistant". */
     data class SetCallAssistant(val state: OnOff) : Command
 
@@ -116,7 +119,7 @@ sealed interface Command {
     data object IdentifySong : Command
 
     /** Play songs stored on the phone or SD card. Both null = shuffle the whole library. */
-    data class PlayMusic(val query: String? = null, val artist: String? = null) : Command
+    data class PlayMusic(val query: String? = null, val artist: String? = null, val folder: String? = null) : Command
 
     data class Info(val query: InfoQuery) : Command
 

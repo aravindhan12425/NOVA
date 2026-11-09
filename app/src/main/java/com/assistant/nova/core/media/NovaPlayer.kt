@@ -31,6 +31,8 @@ class NovaPlayer(private val context: Context) {
     private var noisyRegistered = false
 
     val current: Track? get() = queue.getOrNull(index)
+    val position: Int get() = index + 1
+    val queueSize: Int get() = queue.size
     val isPlaying: Boolean get() = runCatching { player?.isPlaying == true }.getOrDefault(false)
 
     /** Called whenever playback changes: (track, playing). track is null once playback has stopped. */

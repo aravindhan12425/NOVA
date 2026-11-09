@@ -81,6 +81,29 @@ class NovaPrefs(context: Context) {
         get() = p.getFloat("voice_rate", 0.95f)
         set(v) = p.edit().putFloat("voice_rate", v.coerceIn(0.5f, 1.6f)).apply()
 
+    /** Keep listening for another command (no wake word) for 15 s after each command. */
+    var followOn: Boolean
+        get() = p.getBoolean("follow_on", true)
+        set(v) = p.edit().putBoolean("follow_on", v).apply()
+
+    /**
+     * No-wake-word mode: while the screen is on, act on clear commands spoken in the
+     * user's own voice (needs a voice profile). Off by default.
+     */
+    var directMode: Boolean
+        get() = p.getBoolean("direct_mode", false)
+        set(v) = p.edit().putBoolean("direct_mode", v).apply()
+
+    /** When no-wake-word mode listens: [DIRECT_SCREEN_ON] (default), [DIRECT_ALWAYS] or [DIRECT_CHARGING]. */
+    var directWhen: String
+        get() = p.getString("direct_when", DIRECT_SCREEN_ON) ?: DIRECT_SCREEN_ON
+        set(v) = p.edit().putString("direct_when", v).apply()
+
+    /** Voice unlock also requires the user's voice (when a voice profile exists). */
+    var unlockNeedsVoiceId: Boolean
+        get() = p.getBoolean("unlock_voice_id", true)
+        set(v) = p.edit().putBoolean("unlock_voice_id", v).apply()
+
     /** Browser for web searches: [BROWSER_DEFAULT], [BROWSER_CHROME] or [BROWSER_BRAVE]. */
     var browser: String
         get() = p.getString("browser", BROWSER_DEFAULT) ?: BROWSER_DEFAULT
@@ -107,6 +130,9 @@ class NovaPrefs(context: Context) {
         set(v) = p.edit().putBoolean("unlock_blocked", v).apply()
 
     companion object {
+        const val DIRECT_SCREEN_ON = "screen"
+        const val DIRECT_ALWAYS = "always"
+        const val DIRECT_CHARGING = "charging"
         const val AFTER_SILENT = "silent"
         const val AFTER_TONE = "tone"
         const val AFTER_VOICE = "voice"

@@ -30,6 +30,11 @@ import com.assistant.nova.core.Routines
 import com.assistant.nova.core.UsageTracker
 import com.assistant.nova.core.action.CallAssistant
 import com.assistant.nova.core.command.CallAnswer
+import com.assistant.nova.core.command.InCallAction
+import com.assistant.nova.core.command.TextNormalizer
+import com.assistant.nova.core.voiceid.VoiceId
+import org.vosk.Recognizer
+import kotlin.math.sqrt
 import com.assistant.nova.core.command.Command
 import com.assistant.nova.core.command.CommandParser
 import com.assistant.nova.core.command.Redact
@@ -112,7 +117,7 @@ class NovaListenerService : Service() {
         }
     }
 
-    private enum class Trigger { WAKE, TALK, TEXT, PAUSE, MIC_ERROR, BLOCKED }
+    private enum class Trigger { WAKE, TALK, TEXT, DIRECT, PAUSE, MIC_ERROR, BLOCKED }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loopJob: Job? = null
@@ -146,6 +151,7 @@ class NovaListenerService : Service() {
 
     private lateinit var audioManager: AudioManager
     private lateinit var calls: CallAssistant
+    private lateinit var voiceId: VoiceId
     private lateinit var routines: Routines
     private lateinit var usage: UsageTracker
 
@@ -214,13 +220,21 @@ class NovaListenerService : Service() {
         speaker = Speaker(this)
         player = NovaPlayer(this)
         player.onStateChanged = { track, playing ->
-            if (track == null) Notifications.cancelMusic(this)
-            else Notifications.showMusic(this, player.sessionToken, track.title, track.artist, playing)
+            if (track == null) {
+                Notifications.cancelMusic(this)
+                NovaState.nowPlaying.value = null
+            } else {
+                Notifications.showMusic(this, player.sessionToken, track.title, track.artist, playing)
+                NovaState.nowPlaying.value = NovaState.NowPlaying(
+                    track.title, track.artist, track.folder, playing, player.position, player.queueSize,
+                )
+            }
         }
         executor = ActionExecutor(this, player)
         vosk = VoskRecognizer(this, scope)
         recognizer = AndroidRecognizer(this)
         calls = CallAssistant(this)
+        voiceId = VoiceId(this)
         routines = Routines(this)
         usage = UsageTracker(this)
         // USER_PRESENT and PHONE_STATE are protected system broadcasts: only Android itself can send them
@@ -297,6 +311,7 @@ class NovaListenerService : Service() {
         player.release()
         executor.close()
         vosk.close()
+        voiceId.close()
         NovaState.set(Status.OFF)
         super.onDestroy()
     }
@@ -386,11 +401,21 @@ class NovaListenerService : Service() {
                     delay(5_000)
                     continue
                 }
-                listeningText = "Say “${models.keys.joinToString(" or ") { WakeWords.label(it) }}”"
+                val direct = directActive()
+                if (direct && !vosk.isLoaded) withContext(Dispatchers.IO) { runCatching { vosk.load() } }
+                listeningText = "Say “${models.keys.joinToString(" or ") { WakeWords.label(it) }}”" +
+                    if (direct) ", or just say a command" else ""
                 show(Status.LISTENING, listeningText)
 
-                when (withContext(Dispatchers.Default) { waitForWake(engine) }) {
-                    Trigger.WAKE, Trigger.TALK -> handleCommand(engine)
+                when (withContext(Dispatchers.Default) { waitForWake(engine, direct) }) {
+                    Trigger.WAKE, Trigger.TALK -> {
+                        if (handleCommand(engine)) followOnWindow(engine)
+                    }
+                    Trigger.DIRECT -> {
+                        val text = pendingDirect
+                        pendingDirect = null
+                        if (text != null && handleCommand(engine, text, mode = Mode.DIRECT)) followOnWindow(engine)
+                    }
                     Trigger.PAUSE, Trigger.TEXT -> {}
                     Trigger.MIC_ERROR -> {
                         mic.close(); delay(1_000)
@@ -426,8 +451,81 @@ class NovaListenerService : Service() {
         }
     }
 
+    /** A command heard in no-wake-word mode, waiting to be run. */
+    @Volatile private var pendingDirect: String? = null
+
+    /**
+     * No-wake-word mode is on, a voice profile exists, it's the chosen time (screen on /
+     * always / while charging), and no music or call is going on.
+     */
+    private fun directActive(): Boolean {
+        if (!prefs.directMode || !voiceId.isEnrolled || audioManager.isMusicActive || onCall) return false
+        return when (prefs.directWhen) {
+            NovaPrefs.DIRECT_ALWAYS -> true
+            NovaPrefs.DIRECT_CHARGING -> getSystemService(BatteryManager::class.java).isCharging
+            else -> getSystemService(PowerManager::class.java).isInteractive
+        }
+    }
+
+    /**
+     * No-wake-word mode: cuts the audio into sentences (by loudness, so silence costs
+     * nothing), transcribes each one offline, and returns it only if it's a clear command
+     * in the owner's voice.
+     */
+    private inner class DirectListener(private val rec: Recognizer) {
+        private val preroll = ArrayDeque<ShortArray>()
+        private val audio = ArrayList<Short>()
+        private var speaking = false
+        private var quietMs = 0
+        private var speechMs = 0
+
+        fun step(buf: ShortArray, n: Int): String? {
+            var sum = 0.0
+            for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
+            val rms = sqrt(sum / n)
+            val chunk = buf.copyOf(n)
+            if (!speaking) {
+                preroll.addLast(chunk); if (preroll.size > 4) preroll.removeFirst()
+                if (rms < 350) return null
+                speaking = true; quietMs = 0; speechMs = 0; audio.clear()
+                for (c in preroll) { rec.acceptWaveForm(c, c.size); c.forEach { audio += it } }
+                preroll.clear()
+                return null
+            }
+            rec.acceptWaveForm(chunk, n)
+            if (audio.size < 16_000 * 8) chunk.forEach { audio += it }
+            speechMs += 80
+            quietMs = if (rms < 250) quietMs + 80 else 0
+            if (quietMs < 800 && speechMs < 7_000) return null
+            // Sentence finished
+            speaking = false
+            val text = vosk.text(rec.finalResult)
+            return if (text.isNotBlank() && isOwnersCommand(text, audio.toShortArray())) text else null
+        }
+
+        private fun isOwnersCommand(text: String, sound: ShortArray): Boolean {
+            if (TextNormalizer.basic(text).split(' ').size < 2) return false // "next", "pause"… too easy to say by accident
+            val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
+            if (commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel }) return false
+            val score = runCatching { voiceId.score(sound) }.getOrNull()
+            val ok = score != null && score >= voiceId.threshold
+            Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}voice match ${score?.let { "%.2f".format(it) }} " +
+                "(needs %.2f) -> ${if (ok) "run" else "ignore"}".format(voiceId.threshold))
+            return ok
+        }
+    }
+
     /** Reads the mic and runs the wake-word engine until something happens. Runs off the main thread. */
-    private suspend fun waitForWake(engine: WakeWordEngine): Trigger {
+    private suspend fun waitForWake(engine: WakeWordEngine, direct: Boolean = false): Trigger {
+        val rec = if (direct) runCatching { vosk.newRecognizer() }.getOrNull() else null
+        try {
+            return waitForWakeLoop(engine, rec?.let { DirectListener(it) }, direct)
+        } finally {
+            rec?.close()
+        }
+    }
+
+    private suspend fun waitForWakeLoop(engine: WakeWordEngine, directListener: DirectListener?, direct: Boolean): Trigger {
         engine.reset()
         val buf = ShortArray(WakeWordEngine.CHUNK)
         var zeros = 0
@@ -446,7 +544,7 @@ class NovaListenerService : Service() {
                 return Trigger.TALK
             }
             if (pendingText != null) return Trigger.TEXT
-            if (ringing) return Trigger.PAUSE
+            if (ringing || NovaState.enrolling.value) return Trigger.PAUSE
             // Give the microphone back the moment another app wants to record
             if (otherAppRecording) return Trigger.PAUSE
             val n = mic.read(buf)
@@ -484,7 +582,13 @@ class NovaListenerService : Service() {
                 }
                 if (v > nearMiss) nearMiss = v
             }
+            directListener?.step(buf, n)?.let { text ->
+                pendingDirect = text
+                return Trigger.DIRECT
+            }
             if (chunks % 25 == 0) {
+                // Screen turned off / music started: switch no-wake-word mode on or off
+                if (direct != directActive()) return Trigger.PAUSE
                 // "Near miss": something like the wake word in the last 2 s, but below the bar
                 if (nearMiss >= 0.15f) Log.i(TAG, "Near miss: score %.2f (needed %.2f)".format(nearMiss, threshold))
                 nearMiss = 0f
@@ -497,34 +601,94 @@ class NovaListenerService : Service() {
 
     // ── One command ─────────────────────────────────────────────────────────
 
+    /** How a command arrived: after the wake word, in the 15 s follow-on window, or with no wake word. */
+    private enum class Mode { NORMAL, FOLLOW_ON, DIRECT }
+
+    /** Commands that could cause trouble if misheard; in no-wake-word mode Nova lets you cancel them first. */
+    private fun risky(c: Command) = c is Command.Call || c is Command.Message ||
+        (c is Command.CallControl && c.action == InCallAction.END) || c is Command.Camera
+
+    private val cancelWords = Regex("\\b(no|cancel|stop|wait|dont|never mind)\\b")
+
     /**
-     * Handles one command: listens for it, or uses [typed] text (a "Try" button, or a
-     * follow-up answer) instead. [depth] limits follow-up questions to two in a row.
+     * Handles one command: listens for it, or uses [typed] text (a "Try" button, a follow-up
+     * answer, or a sentence heard in no-wake-word mode) instead. [depth] limits follow-up
+     * questions to two in a row. Returns true when Nova actually did something.
      */
-    private suspend fun handleCommand(engine: WakeWordEngine?, typed: String? = null, depth: Int = 0) {
-        usage.countCommand()
-        show(if (typed == null) Status.HEARING else Status.THINKING, if (typed == null) "Listening…" else typed)
+    private suspend fun handleCommand(
+        engine: WakeWordEngine?,
+        typed: String? = null,
+        depth: Int = 0,
+        mode: Mode = Mode.NORMAL,
+        windowMs: Long = 15_000,
+    ): Boolean {
+        val quiet = mode != Mode.NORMAL // follow-on / direct: never complain about things that weren't commands
+        if (mode != Mode.FOLLOW_ON) usage.countCommand()
+        show(
+            if (typed == null) Status.HEARING else Status.THINKING,
+            when {
+                typed != null -> safeText(typed)
+                mode == Mode.FOLLOW_ON -> "Still listening…"
+                else -> "Listening…"
+            },
+        )
         NovaState.partial.value = ""
         inCommand = true
         val focus = requestFocus()
         try {
-            val heard = typed ?: run {
-                beep()
-                recognize()
+            val heard = typed ?: when (mode) {
+                // Follow-on uses the silent offline recognizer: no beep, no Google sound every few seconds
+                Mode.FOLLOW_ON -> listenOffline(silenceStartMs = windowMs)
+                else -> {
+                    beep(); recognize()
+                }
             }
             NovaState.partial.value = ""
             if (heard.isNullOrBlank()) {
-                Log.i(TAG, "Nothing heard (${NovaState.engine.value})")
-                show(Status.LISTENING, "Didn't hear anything")
-                return
+                if (!quiet) {
+                    Log.i(TAG, "Nothing heard (${NovaState.engine.value})")
+                    show(Status.LISTENING, "Didn't hear anything")
+                }
+                return false
             }
             val commands = CommandParser.parseAll(heard, prefs.unlockPhrase, routines.names())
+            if (quiet && commands.all { it is Command.Unknown || it is Command.Cancel }) {
+                // Probably just talking, not a command: ignore it silently
+                if (verboseLogs) Log.i(TAG, "($mode) not a command: “${safeText(heard)}”")
+                return false
+            }
+            if (mode == Mode.FOLLOW_ON) usage.countCommand()
             // During a call only call commands are allowed: the other person might be on speaker
             if (onCall && commands.any { !CommandParser.allowedDuringCall(it) }) {
                 Log.i(TAG, "Ignored during call: ${commands.map { it::class.simpleName }}")
                 NovaState.addExchange(safeText(heard), "Only call commands work during a call")
                 speaker.speak("During a call I can end it, record it, mute you, or switch the speaker.")
-                return
+                return false
+            }
+            // Voice unlock also needs the owner's voice when a voice profile exists
+            if (commands.any { it is Command.Unlock } && voiceId.isEnrolled && prefs.unlockNeedsVoiceId && isLocked) {
+                val audio = lastUtterance
+                val score = audio?.let { withContext(Dispatchers.Default) { runCatching { voiceId.score(it) }.getOrNull() } }
+                Log.i(TAG, "Voice unlock: voice match ${score?.let { "%.2f".format(it) }} (needs %.2f)".format(voiceId.threshold))
+                if (score == null || score < voiceId.threshold) {
+                    val failures = prefs.unlockFailures + 1
+                    prefs.unlockFailures = failures
+                    if (failures >= NovaPrefs.MAX_UNLOCK_FAILURES) prefs.unlockBlocked = true
+                    NovaState.addExchange("${prefs.unlockPhrase} ••••", "Voice not recognised")
+                    speaker.speak("That didn't sound like you, so I won't unlock.")
+                    return false
+                }
+            }
+            // No wake word: give a moment to cancel anything that could cause trouble if misheard
+            if (mode == Mode.DIRECT && commands.any(::risky)) {
+                mic.close()
+                speaker.speak("${heard.replaceFirstChar { it.uppercase() }}?")
+                val answer = listenOffline(silenceStartMs = 2_500)
+                if (answer != null && cancelWords.containsMatchIn(TextNormalizer.basic(answer))) {
+                    NovaState.addExchange(safeText(heard), "Cancelled")
+                    speaker.speak("Cancelled.")
+                    return false
+                }
             }
             // Never show a spoken PIN: not on screen, in history, or in the lock-screen notification
             val shownHeard = if (commands.any { it is Command.Unlock }) {
@@ -535,9 +699,9 @@ class NovaListenerService : Service() {
             show(Status.THINKING, shownHeard)
             // Test builds log what was heard to help debugging; release builds only log command types
             if (verboseLogs) {
-                Log.i(TAG, "Heard “$shownHeard” via ${NovaState.engine.value} -> $commands")
+                Log.i(TAG, "($mode) Heard “$shownHeard” via ${NovaState.engine.value} -> $commands")
             } else {
-                Log.i(TAG, "Commands: ${commands.map { it::class.simpleName }}")
+                Log.i(TAG, "($mode) Commands: ${commands.map { it::class.simpleName }}")
             }
             val replies = commands.map { cmd ->
                 try {
@@ -577,11 +741,27 @@ class NovaListenerService : Service() {
                     handleCommand(engine, next, depth + 1)
                 }
             }
+            return commands.any { it !is Command.Unknown && it !is Command.Cancel }
         } finally {
             abandonFocus(focus)
             engine?.reset()
             commandEndedAt = SystemClock.elapsedRealtime()
             inCommand = false
+        }
+    }
+
+    /**
+     * After a command, keep listening for up to 15 s (no wake word) so several commands can
+     * be given in a row. Every command that works restarts the 15 s.
+     */
+    private suspend fun followOnWindow(engine: WakeWordEngine?) {
+        if (!prefs.followOn || onCall || ringing) return
+        var until = SystemClock.elapsedRealtime() + 15_000
+        while (currentCoroutineContext().isActive) {
+            val left = until - SystemClock.elapsedRealtime()
+            if (left < 1_500 || pauseReason() != null || pendingText != null || ringing) break
+            val acted = handleCommand(engine, mode = Mode.FOLLOW_ON, windowMs = left)
+            if (acted) until = SystemClock.elapsedRealtime() + 15_000
         }
     }
 
@@ -691,12 +871,21 @@ class NovaListenerService : Service() {
         }
     }
 
-    private suspend fun listenOffline(): String? {
+    /** Audio of the last offline-recognized sentence, kept briefly to check the speaker's voice. */
+    private var lastUtterance: ShortArray? = null
+
+    private suspend fun listenOffline(silenceStartMs: Long = 4_500): String? {
         NovaState.engine.value = "Vosk (offline)"
         if (!mic.open()) return null
         if (!vosk.isLoaded) show(Status.HEARING, "Loading offline speech…")
+        val audio = ArrayList<Short>()
         return try {
-            vosk.listen(mic, onPartial = { NovaState.partial.value = safeText(it, aggressive = prefs.voiceUnlock) })
+            vosk.listen(
+                mic,
+                onPartial = { NovaState.partial.value = safeText(it, aggressive = prefs.voiceUnlock) },
+                silenceStartMs = silenceStartMs,
+                capture = { b, n -> if (audio.size < 16_000 * 10) for (i in 0 until n) audio += b[i] },
+            ).also { lastUtterance = audio.toShortArray() }
         } catch (e: Exception) {
             Log.e(TAG, "Offline recognition failed", e)
             null
@@ -709,6 +898,7 @@ class NovaListenerService : Service() {
         get() = audioManager.mode == AudioManager.MODE_IN_CALL || audioManager.mode == AudioManager.MODE_IN_COMMUNICATION
 
     private fun pauseReason(): String? {
+        if (NovaState.enrolling.value) return "learning your voice"
         when (audioManager.mode) {
             // During a call Nova keeps listening, but only for call commands (see handleCommand)
             AudioManager.MODE_IN_CALL, AudioManager.MODE_IN_COMMUNICATION ->

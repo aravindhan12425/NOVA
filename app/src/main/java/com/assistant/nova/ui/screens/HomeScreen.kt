@@ -52,6 +52,9 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.compose.material.icons.filled.PlayArrow
 import com.assistant.nova.core.UsageTracker
+import com.assistant.nova.core.voiceid.VoiceId
+import com.assistant.nova.R
+import androidx.compose.ui.res.painterResource
 import com.assistant.nova.core.NovaPrefs
 import com.assistant.nova.core.NovaState
 import com.assistant.nova.core.NovaState.Status
@@ -70,6 +73,7 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
     val status by NovaState.status.collectAsStateWithLifecycle()
     val partial by NovaState.partial.collectAsStateWithLifecycle()
     val history by NovaState.history.collectAsStateWithLifecycle()
+    val nowPlaying by NovaState.nowPlaying.collectAsStateWithLifecycle()
     var alwaysOn by remember { mutableStateOf(prefs.alwaysOn) }
     var missing by remember { mutableIntStateOf(0) }
 
@@ -77,8 +81,12 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
     val capacity = remember { UsageTracker.batteryCapacityMah(context) }
 
     var callAssistant by remember { mutableStateOf(prefs.callAssistant) }
+    var handsFree by remember { mutableStateOf(prefs.directMode) }
+    var voiceEnrolled by remember { mutableStateOf(VoiceId(context).isEnrolled) }
 
     LifecycleResumeEffect(Unit) {
+        handsFree = prefs.directMode
+        voiceEnrolled = VoiceId(context).isEnrolled
         missing = DeviceProfile.missingRequired(context)
         alwaysOn = prefs.alwaysOn
         callAssistant = prefs.callAssistant
@@ -200,6 +208,43 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
             )
         }
 
+        // Now playing: songs play in Nova's own player, so its controls live here (and in the notification / lock screen)
+        nowPlaying?.let { np ->
+            fun send(action: String) = runCatching {
+                context.startService(Intent(context, NovaListenerService::class.java).setAction(action))
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp)
+                    .background(SurfaceColor, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Now playing in Nova", color = NeonBlue, fontSize = 12.sp)
+                    Text(np.title, color = Color.White, fontSize = 16.sp, maxLines = 1)
+                    Text(
+                        listOf(np.artist, np.folder.takeIf { it.isNotBlank() }?.let { "from $it" }, "song ${np.position} of ${np.count}")
+                            .filterNotNull().filter { it.isNotBlank() }.joinToString(" · "),
+                        color = TextSecondary, fontSize = 12.sp, maxLines = 1,
+                    )
+                }
+                IconButton(onClick = { send(NovaListenerService.ACTION_MEDIA_PREVIOUS) }) {
+                    Icon(painterResource(R.drawable.ic_media_previous), "Previous song", tint = Color.White)
+                }
+                IconButton(onClick = { send(NovaListenerService.ACTION_MEDIA_PLAY_PAUSE) }) {
+                    Icon(
+                        painterResource(if (np.playing) R.drawable.ic_media_pause else R.drawable.ic_media_play),
+                        if (np.playing) "Pause" else "Play", tint = NeonBlue,
+                    )
+                }
+                IconButton(onClick = { send(NovaListenerService.ACTION_MEDIA_NEXT) }) {
+                    Icon(painterResource(R.drawable.ic_media_next), "Next song", tint = Color.White)
+                }
+            }
+        }
+
         Row(
             Modifier
                 .fillMaxWidth()
@@ -261,6 +306,37 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
                     color = TextSecondary, fontSize = 13.sp,
                 )
             }
+        }
+
+        // Hands-free (no wake word): quick on/off; needs Voice ID
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .background(SurfaceColor, RoundedCornerShape(14.dp))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Talk without “Hey Jarvis”", color = Color.White, fontSize = 16.sp)
+                Text(
+                    when {
+                        !voiceEnrolled -> "Set up Voice ID in Settings first"
+                        handsFree -> when (prefs.directWhen) {
+                            NovaPrefs.DIRECT_ALWAYS -> "On: always, only your voice"
+                            NovaPrefs.DIRECT_CHARGING -> "On: while charging, only your voice"
+                            else -> "On: while the screen is on, only your voice"
+                        }
+                        else -> "Off: say “Hey Jarvis” first"
+                    },
+                    color = TextSecondary, fontSize = 13.sp,
+                )
+            }
+            Switch(
+                checked = handsFree && voiceEnrolled,
+                enabled = voiceEnrolled,
+                onCheckedChange = { handsFree = it; prefs.directMode = it },
+            )
         }
 
         // Call assistant: off = completely normal calls; on = announce callers, answer/reject, in-call commands

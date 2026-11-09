@@ -50,6 +50,17 @@ object Capabilities {
                     listOf(Requirement.ACCESSIBILITY),
                 ),
                 Capability(
+                    "Keep talking",
+                    "After any command Nova keeps listening for 15 seconds, so you can say the next one without “Hey Jarvis”.",
+                    ex("turn on wifi", "play my songs", "what's the time"),
+                ),
+                Capability(
+                    "No wake word (Voice ID)",
+                    "Teach Nova your voice in Settings → Voice ID, then turn on “Talk without Hey Jarvis”. While the screen " +
+                        "is on, just say a command and only your voice works. Calls and messages wait a moment so you can say “no”.",
+                    ex("call Krishna", "turn off bluetooth", "set a timer for 5 minutes"),
+                ),
+                Capability(
                     "Follow-up questions",
                     "If something's missing, Nova asks (“For how long?”) and you just answer: no wake word needed.",
                     ex("set a timer", "call", "remind me to pay the bill"),

@@ -11,7 +11,8 @@ import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import com.assistant.nova.core.command.FuzzyMatcher
 
-data class Track(val id: Long, val title: String, val artist: String, val album: String, val uri: Uri)
+/** [folder] = the folder the file is in, e.g. "English music" for Audio/English music/song.mp3. */
+data class Track(val id: Long, val title: String, val artist: String, val album: String, val uri: Uri, val folder: String = "")
 
 /**
  * Songs stored on the phone, from Android's media library. That library already covers
@@ -49,6 +50,7 @@ class MusicLibrary(private val context: Context) {
             arrayOf(
                 MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE,
                 MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM,
+                MediaStore.Audio.Media.RELATIVE_PATH,
             ),
             "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 30000",
             null,
@@ -62,6 +64,8 @@ class MusicLibrary(private val context: Context) {
                     artist = c.getString(2)?.takeUnless { it == MediaStore.UNKNOWN_STRING }.orEmpty(),
                     album = c.getString(3).orEmpty(),
                     uri = ContentUris.withAppendedId(collection, id),
+                    // "Music/English music/" -> "English music"
+                    folder = c.getString(4)?.trim('/')?.substringAfterLast('/').orEmpty(),
                 )
             }
         }
@@ -72,9 +76,17 @@ class MusicLibrary(private val context: Context) {
      * Finds what to play: one song by title (optionally by a given artist), or every song
      * by an artist. Returns the queue to play, or an empty list.
      */
-    fun find(query: String?, artist: String?): List<Track> {
+    /** Folders that contain music, with how many songs each ("English music" to 23). */
+    fun folders(): Map<String, Int> = all().filter { it.folder.isNotBlank() }.groupingBy { it.folder }.eachCount()
+
+    fun find(query: String?, artist: String?, folder: String? = null): List<Track> {
         val tracks = all()
         if (tracks.isEmpty()) return emptyList()
+        if (!folder.isNullOrBlank()) {
+            // "play songs from English music folder": that folder's songs, in order
+            val f = FuzzyMatcher.best(folder, folders().keys.toList(), 0.7) { it } ?: return emptyList()
+            return tracks.filter { it.folder == f.item }
+        }
         if (query.isNullOrBlank()) {
             if (artist.isNullOrBlank()) return tracks.shuffled()
             val byArtist = FuzzyMatcher.best(artist, tracks.map { it.artist }.distinct().filter { it.isNotBlank() }, 0.7) { it }
@@ -89,8 +101,10 @@ class MusicLibrary(private val context: Context) {
         // Not a song title? Maybe it's an artist or album name ("play Anirudh", "play Naruto OST")
         val byArtist = FuzzyMatcher.best(query, tracks.map { it.artist }.distinct().filter { it.isNotBlank() }, 0.85) { it }
         val byAlbum = FuzzyMatcher.best(query, tracks.map { it.album }.distinct().filter { it.isNotBlank() }, 0.85) { it }
+        val byFolder = FuzzyMatcher.best(query, folders().keys.toList(), 0.85) { it }
         val songScore = song?.score ?: 0.0
         return when {
+            byFolder != null && byFolder.score > songScore -> tracks.filter { it.folder == byFolder.item }
             byArtist != null && byArtist.score > songScore -> tracks.filter { it.artist == byArtist.item }.shuffled()
             byAlbum != null && byAlbum.score > songScore -> tracks.filter { it.album == byAlbum.item }
             song != null -> listOf(song.item) + (pool - song.item).shuffled() // then keep playing other songs
