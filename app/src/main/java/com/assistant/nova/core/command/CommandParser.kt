@@ -217,11 +217,11 @@ object CommandParser {
 
     private const val THE_CALL = "(?: (?:the|this|my|current|ongoing))?(?: phone)? call"
     private val CALL_CONTROL: List<Pair<Regex, InCallAction>> = listOf(
-        Regex("^(?:end|cut|hang up|disconnect|finish|drop|close|stop|terminate)$THE_CALL(?: now)?$|^(?:hang up|hangup|end it|cut it off)$") to InCallAction.END,
+        Regex("^(?:end|cut|hang up|disconnect|finish|drop|close|stop|terminate)$THE_CALL(?: now)?$|^(?:hang up|hangup|disconnect|end it|cut it|cut it off|call cut|call end|cut the phone|end the phone)$") to InCallAction.END,
         Regex("^(?:stop|end|pause) (?:the )?(?:call )?recording(?: the call| this call)?$") to InCallAction.RECORD_STOP,
         Regex("^(?:start )?(?:recording|record)(?: the| this| my)?(?: call| conversation)?$|^start (?:call )?recording$") to InCallAction.RECORD_START,
-        Regex("^unmute(?: the| my)?(?: call| mic| microphone| myself)?$|^turn on (?:my |the )?(?:mic|microphone)$") to InCallAction.UNMUTE,
-        Regex("^mute(?: the| my)? (?:call|mic|microphone|myself)$|^turn off (?:my |the )?(?:mic|microphone)$") to InCallAction.MUTE,
+        Regex("^unmute(?: the| my)?(?: call| mic| microphone| myself| me)?$|^turn on (?:my |the )?(?:mic|microphone)$") to InCallAction.UNMUTE,
+        Regex("^mute(?: the| my)? (?:call|mic|microphone|myself|me)$|^turn off (?:my |the )?(?:mic|microphone)$") to InCallAction.MUTE,
         Regex("^(?:turn on|switch on|enable|put on|use)(?: the)? (?:speaker|speakerphone|loudspeaker|loud speaker)$|^(?:speaker|speakerphone|loudspeaker)(?: on| mode)?$|^put (?:it |the call |this )?on (?:speaker|loudspeaker)$") to InCallAction.SPEAKER_ON,
         Regex("^(?:turn off|switch off|disable)(?: the)? (?:speaker|speakerphone|loudspeaker)$|^(?:speaker|speakerphone|loudspeaker) off$|^take (?:it )?off speaker$") to InCallAction.SPEAKER_OFF,
         Regex("^(?:put|place)(?: the| this)?(?: call| it)? on hold$|^hold(?: the| this)?(?: call)?$") to InCallAction.HOLD,

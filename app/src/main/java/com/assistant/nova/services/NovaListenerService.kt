@@ -30,6 +30,7 @@ import com.assistant.nova.core.Routines
 import com.assistant.nova.core.UsageTracker
 import com.assistant.nova.core.action.CallAssistant
 import com.assistant.nova.core.command.CallAnswer
+import com.assistant.nova.core.command.CallPhrases
 import com.assistant.nova.core.command.InCallAction
 import com.assistant.nova.core.command.TextNormalizer
 import com.assistant.nova.core.voiceid.VoiceId
@@ -117,7 +118,7 @@ class NovaListenerService : Service() {
         }
     }
 
-    private enum class Trigger { WAKE, TALK, TEXT, DIRECT, PAUSE, MIC_ERROR, BLOCKED }
+    private enum class Trigger { WAKE, TALK, TEXT, DIRECT, CALL, PAUSE, MIC_ERROR, BLOCKED }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loopJob: Job? = null
@@ -431,8 +432,13 @@ class NovaListenerService : Service() {
                 }
                 val direct = directActive()
                 if (direct && !vosk.isLoaded) withContext(Dispatchers.IO) { runCatching { vosk.load() } }
-                listeningText = "Say “${models.keys.joinToString(" or ") { WakeWords.label(it) }}”" +
-                    if (direct) ", or just say a command" else ""
+                listeningText = if (callListening()) {
+                    "On a call: just say “end the call”, “speaker on”, “mute me”…"
+                } else {
+                    "Say “${models.keys.joinToString(" or ") { WakeWords.label(it) }}”" +
+                        if (direct) ", or just say a command" else ""
+                }
+                if (callListening() && !vosk.isLoaded) withContext(Dispatchers.IO) { runCatching { vosk.load() } }
                 show(Status.LISTENING, listeningText)
 
                 when (withContext(Dispatchers.Default) { waitForWake(engine, direct) }) {
@@ -443,6 +449,11 @@ class NovaListenerService : Service() {
                         val text = pendingDirect
                         pendingDirect = null
                         if (text != null && handleCommand(engine, text, mode = Mode.DIRECT)) followOnWindow(engine)
+                    }
+                    Trigger.CALL -> {
+                        val phrase = pendingCall
+                        pendingCall = null
+                        if (phrase != null) handleCommand(engine, phrase)
                     }
                     Trigger.PAUSE, Trigger.TEXT -> {}
                     Trigger.MIC_ERROR -> {
@@ -548,14 +559,68 @@ class NovaListenerService : Service() {
     /** Reads the mic and runs the wake-word engine until something happens. Runs off the main thread. */
     private suspend fun waitForWake(engine: WakeWordEngine, direct: Boolean = false): Trigger {
         val rec = if (direct) runCatching { vosk.newRecognizer() }.getOrNull() else null
+        val callRec = if (callListening()) {
+            runCatching { vosk.newGrammarRecognizer(CallPhrases.grammarJson()) }
+                .onFailure { Log.e(TAG, "Couldn't start listening for call commands", it) }
+                .getOrNull()
+        } else {
+            null
+        }
         try {
-            return waitForWakeLoop(engine, rec?.let { DirectListener(it) }, direct)
+            return waitForWakeLoop(engine, rec?.let { DirectListener(it) }, direct, callRec?.let { CallListener(it) })
         } finally {
             rec?.close()
+            callRec?.close()
         }
     }
 
-    private suspend fun waitForWakeLoop(engine: WakeWordEngine, directListener: DirectListener?, direct: Boolean): Trigger {
+    /** During a call with the call assistant on: listen for "end the call" etc. without a wake word. */
+    private fun callListening(): Boolean = onCall && prefs.callAssistant && prefs.listenDuringCalls
+
+    /** A call command heard without a wake word, waiting to be run. */
+    @Volatile private var pendingCall: String? = null
+
+    /**
+     * Listens through the whole call for the short call phrases only ([CallPhrases]).
+     * Anything else said on the call is ignored.
+     */
+    private inner class CallListener(private val rec: org.vosk.Recognizer) {
+        fun step(buf: ShortArray, n: Int, engine: WakeWordEngine): String? {
+            if (!rec.acceptWaveForm(buf, n)) return null
+            val heard = vosk.text(rec.result)
+            val phrase = CallPhrases.accept(heard)
+            if (phrase == null) {
+                if (verboseLogs && heard.isNotBlank()) Log.i(TAG, "In call, not a command: “$heard”")
+                return null
+            }
+            // On speaker the other person's voice reaches the mic too: then it must be the owner's voice
+            if (onSpeaker() && voiceId.isEnrolled) {
+                val score = runCatching { voiceId.score(engine.recentAudio(2.5)) }.getOrNull()
+                val needed = voiceId.threshold - 0.1f
+                if (score == null || score < needed) {
+                    Log.i(TAG, "In call: “$phrase” ignored, voice match ${score?.let { "%.2f".format(it) }} (needs %.2f)".format(needed))
+                    return null
+                }
+            }
+            Log.i(TAG, "In call: “$phrase”")
+            return phrase
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun onSpeaker(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.communicationDevice?.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        } else {
+            audioManager.isSpeakerphoneOn
+        }
+
+    private suspend fun waitForWakeLoop(
+        engine: WakeWordEngine,
+        directListener: DirectListener?,
+        direct: Boolean,
+        callListener: CallListener? = null,
+    ): Trigger {
         engine.reset()
         val buf = ShortArray(WakeWordEngine.CHUNK)
         var zeros = 0
@@ -627,9 +692,15 @@ class NovaListenerService : Service() {
                 pendingDirect = text
                 return Trigger.DIRECT
             }
+            callListener?.step(buf, n, engine)?.let { phrase ->
+                pendingCall = phrase
+                return Trigger.CALL
+            }
             if (chunks % 25 == 0) {
                 // Screen turned off / music started: switch no-wake-word mode on or off
                 if (direct != directActive()) return Trigger.PAUSE
+                // A call started or ended: start or stop listening for call commands
+                if ((callListener != null) != callListening()) return Trigger.PAUSE
                 // "Near miss": something like the wake word in the last 2 s, but below the bar
                 if (nearMiss >= 0.15f) Log.i(TAG, "Near miss: score %.2f (needed %.2f)".format(nearMiss, threshold))
                 nearMiss = 0f

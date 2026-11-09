@@ -105,9 +105,11 @@ object Capabilities {
                 ),
                 Capability(
                     "During a call",
-                    "Say “Hey Jarvis” on a call, then: end the call, record the call (uses your phone app's own recorder), " +
-                        "stop recording, mute, unmute, speaker on or off, hold. Only call commands work during a call.",
-                    ex("end the call", "record the call", "stop recording", "mute the call", "speaker on", "put the call on hold"),
+                    "With the call assistant on, Nova listens through the whole call: just say “end the call” or " +
+                        "“cut the call”, no wake word needed. Also: record the call (your phone app's own recorder), " +
+                        "stop recording, mute me, turn on my mic, speaker on or off, hold. Everything else said on the " +
+                        "call is ignored. On speaker, only your voice works once Voice ID is set up.",
+                    ex("end the call", "cut the call", "hang up", "record the call", "mute me", "speaker on", "put the call on hold"),
                     listOf(Requirement.CALL_ASSISTANT, Requirement.CALLS, Requirement.ACCESSIBILITY),
                 ),
                 Capability(

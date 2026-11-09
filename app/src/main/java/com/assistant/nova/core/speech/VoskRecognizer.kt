@@ -60,6 +60,10 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
         unloadJob?.cancel()
     }
 
+    /** A recognizer that only knows the phrases in [grammarJson] (plus "[unk]"); caller closes it. */
+    suspend fun newGrammarRecognizer(grammarJson: String): Recognizer =
+        Recognizer(load(), 16_000f, grammarJson).also { unloadJob?.cancel() }
+
     /** Pull the (top) text out of a Vosk JSON result. */
     fun text(json: String, key: String = "text"): String = texts(json, key).firstOrNull().orEmpty()
 
