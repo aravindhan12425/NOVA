@@ -55,7 +55,58 @@ object DeviceProfile {
         val build: String,
         /** OnePlus, OPPO and realme share the same battery and background rules (ColorOS / OxygenOS). */
         val isOnePlusFamily: Boolean,
+        val family: Family = Family.OTHER,
     )
+
+    /** Phone families that share the same settings menus and background-app rules. */
+    enum class Family(val label: String) {
+        ONEPLUS("OnePlus / OPPO / realme"), SAMSUNG("Samsung"), XIAOMI("Xiaomi / Redmi / POCO"),
+        VIVO("vivo / iQOO"), MOTOROLA("Motorola"), GOOGLE("Google Pixel"), OTHER("Android"),
+    }
+
+    internal fun familyOf(maker: String, brand: String): Family {
+        val names = listOf(maker, brand).map { it.lowercase() }
+        return when {
+            names.any { it in setOf("oneplus", "oppo", "realme") } -> Family.ONEPLUS
+            names.any { it == "samsung" } -> Family.SAMSUNG
+            names.any { it in setOf("xiaomi", "redmi", "poco") } -> Family.XIAOMI
+            names.any { it in setOf("vivo", "iqoo") } -> Family.VIVO
+            names.any { it == "motorola" } -> Family.MOTOROLA
+            names.any { it == "google" } -> Family.GOOGLE
+            else -> Family.OTHER
+        }
+    }
+
+    /** How to make the power button (or a gesture) open the digital assistant on this brand. */
+    fun powerButtonSteps(f: Family): String = when (f) {
+        Family.ONEPLUS -> "Settings → Additional settings → Power button → Press and hold → Voice assistant."
+        Family.MOTOROLA, Family.GOOGLE -> "Settings → System → Gestures → Press and hold power button → Digital assistant."
+        Family.SAMSUNG -> "Samsung's side button only opens Bixby or the power menu, so use the assistant gesture instead: " +
+            "swipe up from a bottom corner (gesture navigation) or long-press Home (button navigation)."
+        Family.XIAOMI, Family.VIVO, Family.OTHER -> "look in Settings for “Power button” or “Press and hold” and choose the " +
+            "assistant; otherwise swipe up from a bottom corner, or long-press Home, opens it."
+    }
+
+    /** How to stop this brand from closing Nova in the background (title, steps). */
+    fun backgroundSteps(f: Family): Pair<String, String> = when (f) {
+        Family.ONEPLUS -> "Background activity" to
+            "In App info → Battery usage, turn on “Allow background activity” (and “Allow auto launch” if shown). " +
+            "Also lock Nova in Recents (open Recents, tap ⋮ or long-press Nova’s card → Lock)."
+        Family.SAMSUNG -> "Never sleeping apps" to
+            "Settings → Battery → Background usage limits → Never sleeping apps → add Nova AI. " +
+            "Also App info → Battery → Unrestricted. Samsung puts unused apps to sleep otherwise."
+        Family.XIAOMI -> "Autostart & no restrictions" to
+            "App info → turn on Autostart; App info → Battery saver → No restrictions; App info → Other permissions → " +
+            "allow “Display pop-up windows while running in the background” (needed to open apps by voice). " +
+            "Lock Nova in Recents (pull its card down → lock icon)."
+        Family.VIVO -> "Background power & autostart" to
+            "Settings → Battery → Background power consumption management → Nova AI → Allow. " +
+            "Then Settings → Apps → Autostart (or i Manager → App manager → Autostart) → Nova AI on."
+        Family.MOTOROLA -> "Unrestricted battery" to
+            "App info → App battery usage → Unrestricted. Motorola is close to stock Android, so that's usually all."
+        Family.GOOGLE, Family.OTHER -> "Background activity" to
+            "App info → App battery usage → Unrestricted. If your phone has its own battery manager, set Nova to “No restrictions”."
+    }
 
     /** Marketing names for model codes (Build.MODEL only gives the code, e.g. "CPH2465"). */
     private val MODEL_NAMES = mapOf(
@@ -76,6 +127,7 @@ object DeviceProfile {
             api = Build.VERSION.SDK_INT,
             build = Build.DISPLAY.orEmpty(),
             isOnePlusFamily = family,
+            family = familyOf(maker, Build.BRAND.orEmpty()),
         )
     }
 
@@ -215,25 +267,15 @@ object DeviceProfile {
                     "Allow",
                 ),
             )
-            if (phone.isOnePlusFamily) {
-                add(
-                    Check(
-                        "${phone.brand}: background activity & auto launch",
-                        "${phone.brand} closes background apps on its own. In App info → Battery usage, turn on " +
-                            "“Allow background activity” and “Allow auto launch”. Also lock Nova in Recents " +
-                            "(open Recents, tap ⋮ or long-press Nova’s card → Lock).",
-                        State.MANUAL, Fix.Open(appSettings(context)), "Open App info",
-                    ),
-                )
-            } else {
-                add(
-                    Check(
-                        "Background activity",
-                        "If your phone has its own battery manager, set Nova to “Unrestricted” / “No restrictions”.",
-                        State.MANUAL, Fix.Open(appSettings(context)), "Open App info",
-                    ),
-                )
-            }
+            // Each brand hides its "keep this app running" settings in a different place
+            val (bgTitle, bgSteps) = backgroundSteps(phone.family)
+            add(
+                Check(
+                    "${phone.family.label}: $bgTitle",
+                    bgSteps,
+                    State.MANUAL, Fix.Open(appSettings(context)), "Open App info",
+                ),
+            )
             add(
                 Check(
                     "Long-press power → Nova",
@@ -241,8 +283,8 @@ object DeviceProfile {
                         "Nova is your digital assistant. Long-press power to talk, and listening restarts by itself after a reboot."
                     } else {
                         "Optional. Make Nova your digital assistant: long-press power talks to Nova, and listening restarts after " +
-                            "a reboot without a tap. Then on OnePlus: Settings → Additional settings → Power button → " +
-                            "Press and hold → Voice assistant. Note: “Hey Google” stops working while Nova is your assistant."
+                            "a reboot without a tap. Then: ${powerButtonSteps(phone.family)} " +
+                            "Note: “Hey Google” stops working while Nova is your assistant."
                     },
                     if (isAssistant(context)) State.OK else State.RECOMMENDED,
                     Fix.Open(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)), "Choose",

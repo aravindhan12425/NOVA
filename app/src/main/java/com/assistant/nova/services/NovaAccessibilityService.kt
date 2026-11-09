@@ -40,7 +40,8 @@ class NovaAccessibilityService : AccessibilityService() {
         private val TILE_NAMES: Map<Feature, List<String>> = mapOf(
             Feature.WIFI to listOf("wifi", "wlan", "internet"),
             Feature.BLUETOOTH to listOf("bluetooth"),
-            Feature.MOBILE_DATA to listOf("mobiledata", "cellulardata", "mobilenetwork", "data"),
+            // "internet" last: phones with one combined Internet tile (handled by internetPanel)
+            Feature.MOBILE_DATA to listOf("mobiledata", "cellulardata", "mobilenetwork", "data", "internet"),
             Feature.AIRPLANE to listOf("airplanemode", "aeroplanemode", "flightmode", "airplane", "aeroplane"),
             Feature.HOTSPOT to listOf("hotspot", "personalhotspot", "wifihotspot", "tethering"),
             Feature.AUTO_ROTATE to listOf("autorotate", "autorotation", "screenrotation", "rotate", "rotation", "portrait"),
@@ -126,6 +127,13 @@ class NovaAccessibilityService : AccessibilityService() {
                 Log.i(tag, "$feature: before=$before desired=$desired")
                 if (desired != null && before == desired) return@withContext QsResult.ALREADY
 
+                // Motorola, Pixel and others: Wi-Fi and mobile data share one "Internet" tile that
+                // opens a panel instead of switching. Tap it, then flip the switch inside the panel.
+                val top = candidates.first()
+                if ((feature == Feature.WIFI || feature == Feature.MOBILE_DATA) && isInternetTile(top)) {
+                    return@withContext internetPanel(feature, top, desired, before, systemState)
+                }
+
                 for (node in candidates) {
                     val tapped = click(node)
                     Log.i(tag, "$feature: tapped=${tapped} ${describe(node)}")
@@ -151,6 +159,144 @@ class NovaAccessibilityService : AccessibilityService() {
             } finally {
                 closeShade()
             }
+        }
+    }
+
+    private fun isInternetTile(n: AccessibilityNodeInfo) =
+        compact(n.contentDescription).startsWith("internet") || compact(n.text).startsWith("internet")
+
+    /** Opens the "Internet" panel and flips its Wi-Fi or mobile-data switch. */
+    private suspend fun internetPanel(
+        feature: Feature,
+        tile: AccessibilityNodeInfo,
+        desired: Boolean?,
+        before: Boolean?,
+        systemState: () -> Boolean?,
+    ): QsResult {
+        click(tile)
+        delay(900)
+        val wifi = feature == Feature.WIFI
+        // AOSP's Internet panel ids, then a switch next to a "Wi-Fi" / "Mobile data" label
+        val toggle = findByIdSuffix(if (wifi) "wifi_toggle" else "mobile_toggle")
+            ?: switchNear(if (wifi) listOf("wifi") else listOf("mobiledata", "mobilenetwork", "sim"))
+        if (toggle == null) {
+            Log.w(tag, "$feature: Internet panel opened but no switch found")
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            return QsResult.NO_EFFECT
+        }
+        if (desired != null && toggle.isCheckable && toggle.isChecked == desired) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            return QsResult.ALREADY
+        }
+        click(toggle)
+        var result = QsResult.NO_EFFECT
+        val deadline = SystemClock.uptimeMillis() + 2_500
+        while (SystemClock.uptimeMillis() < deadline) {
+            delay(250)
+            val now = systemState() ?: run { toggle.refresh(); if (toggle.isCheckable) toggle.isChecked else null }
+            if (now == null || (desired != null && now == desired) || (desired == null && before != null && now != before)) {
+                result = QsResult.DONE; break
+            }
+        }
+        Log.i(tag, "$feature via Internet panel: $result")
+        performGlobalAction(GLOBAL_ACTION_BACK) // close the panel
+        return result
+    }
+
+    private fun allRoots(): List<AccessibilityNodeInfo> =
+        (try { windows.mapNotNull { it.root } } catch (_: Exception) { emptyList() }) + listOfNotNull(rootInActiveWindow)
+
+    private fun findByIdSuffix(suffix: String): AccessibilityNodeInfo? {
+        for (root in allRoots()) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+            var visited = 0
+            while (queue.isNotEmpty() && visited++ < 3_000) {
+                val n = queue.removeFirst()
+                if (n.isVisibleToUser && n.viewIdResourceName?.endsWith(suffix) == true) return n
+                for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+            }
+        }
+        return null
+    }
+
+    /** A switch in the same row as a label (e.g. the toggle next to "Wi-Fi" in a panel). */
+    private fun switchNear(labels: List<String>): AccessibilityNodeInfo? {
+        for (root in allRoots()) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+            var visited = 0
+            while (queue.isNotEmpty() && visited++ < 3_000) {
+                val n = queue.removeFirst()
+                for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+                val t = compact(n.text).ifEmpty { compact(n.contentDescription) }
+                if (!n.isVisibleToUser || labels.none { t.startsWith(it) }) continue
+                if (n.isCheckable) return n
+                // Look through the row (up to two levels up) for the switch
+                var row = n.parent
+                repeat(2) {
+                    val r = row ?: return@repeat
+                    val inner = ArrayDeque<AccessibilityNodeInfo>().apply { add(r) }
+                    while (inner.isNotEmpty()) {
+                        val c = inner.removeFirst()
+                        if (c.isCheckable && c.isVisibleToUser) return c
+                        for (i in 0 until c.childCount) c.getChild(i)?.let(inner::addLast)
+                    }
+                    row = r.parent
+                }
+            }
+        }
+        return null
+    }
+
+    // ── Scan this phone (Device check) ──────────────────────────────────────
+
+    /** What Nova found in this phone's Quick Settings, for the Device check scan. */
+    data class ScanResult(
+        val found: Map<Feature, String>,
+        val missing: List<Feature>,
+        val internetTile: Boolean,
+        val labels: List<String>,
+        val pages: Int,
+    )
+
+    /**
+     * Opens Quick Settings, reads every tile's name on up to 3 pages WITHOUT tapping
+     * anything, and closes it again. Shows which features Nova can switch on this phone.
+     */
+    suspend fun scanQuickSettings(): ScanResult = mutex.withLock {
+        withContext(Dispatchers.Main) {
+            performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+            delay(900)
+            val found = LinkedHashMap<Feature, String>()
+            val labels = LinkedHashSet<String>()
+            var pages = 1
+            try {
+                for (page in 0 until 3) {
+                    for (root in systemUiRoots()) {
+                        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+                        var visited = 0
+                        while (queue.isNotEmpty() && visited++ < 3_000 && labels.size < 300) {
+                            val n = queue.removeFirst()
+                            for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+                            val l = (n.contentDescription ?: n.text)?.toString()?.trim()
+                            if (n.isVisibleToUser && n.isClickable && !l.isNullOrEmpty()) labels += l
+                        }
+                    }
+                    for (f in Feature.entries) {
+                        if (f in found) continue
+                        tileCandidates(f).firstOrNull()?.let { n ->
+                            found[f] = (n.contentDescription ?: n.text)?.toString()?.trim().orEmpty()
+                        }
+                    }
+                    if (page == 2 || !scrollQuickSettings()) break
+                    pages++
+                    delay(700)
+                }
+            } finally {
+                closeShade()
+            }
+            val internet = labels.any { compact(it).startsWith("internet") }
+            Log.i(tag, "Scan: found ${found.keys}, missing ${Feature.entries.filter { it !in found }}, labels $labels")
+            ScanResult(found, Feature.entries.filter { it !in found }, internet, labels.toList(), pages)
         }
     }
 
