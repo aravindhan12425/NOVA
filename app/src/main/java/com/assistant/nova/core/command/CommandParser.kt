@@ -67,6 +67,16 @@ object CommandParser {
         return if (commands.none { it is Command.Unknown }) commands else listOf(whole)
     }
 
+    /**
+     * The speech recognizer's guesses for one sentence, best first ("turn on why fi",
+     * "turn on wifi", …). Returns the first guess that is a command Nova understands, so a
+     * near miss in the top guess doesn't lose the command. Falls back to the top guess.
+     */
+    fun bestOf(guesses: List<String>, unlockPhrase: String? = null, routines: List<String> = emptyList()): String? {
+        val clean = guesses.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        return clean.firstOrNull { g -> parseAll(g, unlockPhrase, routines).none { it is Command.Unknown } } ?: clean.firstOrNull()
+    }
+
     /** First command of [parseAll]; handy for tests. */
     fun parse(raw: String, unlockPhrase: String? = null, routines: List<String> = emptyList()): Command =
         parseAll(raw, unlockPhrase, routines).first()

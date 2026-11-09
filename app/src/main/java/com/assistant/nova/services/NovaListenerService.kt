@@ -365,13 +365,29 @@ class NovaListenerService : Service() {
                 }
 
                 val pause = pauseReason()
+                // A tap on the mic ("Talk now", Nova's screen, power-button assistant) is a clear request:
+                // take one command even while listening is paused, e.g. "end the call" with the call
+                // assistant switched off. (Not while Voice ID is recording or the phone is ringing.)
+                if (pause != null && talkRequested && !NovaState.enrolling.value && audioManager.mode != AudioManager.MODE_RINGTONE) {
+                    talkRequested = false
+                    Log.i(TAG, "Talk requested while paused ($pause)")
+                    if (onCall && !vosk.isLoaded) {
+                        show(Status.HEARING, "Loading offline speech…")
+                        withContext(Dispatchers.IO) { runCatching { vosk.load() } }
+                    }
+                    if (mic.open()) handleCommand(wake) else speaker.speak("I can't use the microphone right now.")
+                    mic.close()
+                    continue
+                }
                 if (pause != null) {
                     mic.close()
                     if (lastPause != pause) Log.i(TAG, "Paused: $pause")
                     lastPause = pause
                     show(Status.PAUSED, "Paused: $pause")
                     // Short pauses (another app recording) are rechecked quickly so Nova is back fast
-                    delay(if (pause.contains("microphone")) 700 else 3_000)
+                    // …but a tap on the mic is answered straight away
+                    val until = SystemClock.elapsedRealtime() + if (pause.contains("microphone")) 700 else 3_000
+                    while (SystemClock.elapsedRealtime() < until && !talkRequested && pendingText == null) delay(150)
                     continue
                 }
                 if (lastPause != null) {
@@ -499,6 +515,7 @@ class NovaListenerService : Service() {
             if (quietMs < 800 && speechMs < 7_000) return null
             // Sentence finished
             speaking = false
+            // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova
             val text = vosk.text(rec.finalResult)
             return if (text.isNotBlank() && isOwnersCommand(text, audio.toShortArray())) text else null
         }
@@ -660,6 +677,12 @@ class NovaListenerService : Service() {
                 if (!quiet) {
                     Log.i(TAG, "Nothing heard (${NovaState.engine.value})")
                     show(Status.LISTENING, "Didn't hear anything")
+                    if (onCall && lastUtteranceWasSilent()) {
+                        // Android gave Nova pure silence: it mutes other apps' microphones during calls
+                        Log.i(TAG, "Microphone muted by Android during the call")
+                        NovaState.addExchange("(no sound)", "Android muted Nova's microphone during the call")
+                        speaker.speak("The phone is muting my microphone during this call. Open Nova's screen and tap the mic.")
+                    }
                 }
                 return false
             }
@@ -863,14 +886,17 @@ class NovaListenerService : Service() {
         return when (val r = recognizer.listen(offline = !online) { NovaState.partial.value = safeText(it) }) {
             is AndroidRecognizer.Result.Text -> {
                 phoneRecognizerMisses = 0
-                r.text
+                val best = bestGuess(r.alternatives) ?: r.text
+                if (verboseLogs && best != r.text) Log.i(TAG, "Heard “${r.text}”, used “$best”")
+                best
             }
             AndroidRecognizer.Result.NoSpeech -> {
                 // On some phones the system recognizer hears nothing while Nova is in the
                 // background. If that keeps happening, use the offline engine for a while.
+                // (Only briefly: the offline engine is much less accurate.)
                 if (++phoneRecognizerMisses >= 3) {
                     phoneRecognizerMisses = 0
-                    preferOfflineUntil = SystemClock.elapsedRealtime() + 30 * 60_000L
+                    preferOfflineUntil = SystemClock.elapsedRealtime() + 5 * 60_000L
                 }
                 null
             }
@@ -882,6 +908,17 @@ class NovaListenerService : Service() {
             }
         }
     }
+
+    /** True when the last offline listen got digital silence (all samples ~0), not just a quiet room. */
+    private fun lastUtteranceWasSilent(): Boolean {
+        val a = lastUtterance ?: return false
+        if (a.size < 8_000) return false
+        return a.all { it in -2..2 }
+    }
+
+    /** The first of the recognizer's guesses that is a real command (else the top guess). */
+    private fun bestGuess(guesses: List<String>): String? =
+        CommandParser.bestOf(guesses, prefs.unlockPhrase, routines.names())
 
     /** Audio of the last offline-recognized sentence, kept briefly to check the speaker's voice. */
     private var lastUtterance: ShortArray? = null
@@ -896,6 +933,7 @@ class NovaListenerService : Service() {
                 mic,
                 onPartial = { NovaState.partial.value = safeText(it, aggressive = prefs.voiceUnlock) },
                 silenceStartMs = silenceStartMs,
+                pick = ::bestGuess,
                 capture = { b, n -> if (audio.size < 16_000 * 10) for (i in 0 until n) audio += b[i] },
             ).also { lastUtterance = audio.toShortArray() }
         } catch (e: Exception) {

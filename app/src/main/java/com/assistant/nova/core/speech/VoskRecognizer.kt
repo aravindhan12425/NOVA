@@ -55,10 +55,31 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
      * Gives up after [silenceStartMs] if nobody starts talking, or after [maxMs] in total.
      */
     /** A fresh streaming recognizer for the no-wake-word mode (caller closes it). */
-    suspend fun newRecognizer(): Recognizer = Recognizer(load(), 16_000f).also { unloadJob?.cancel() }
+    suspend fun newRecognizer(): Recognizer = Recognizer(load(), 16_000f).also {
+        it.setMaxAlternatives(ALTERNATIVES)
+        unloadJob?.cancel()
+    }
 
-    /** Pull the text out of a Vosk JSON result. */
-    fun text(json: String, key: String = "text"): String = field(json, key)
+    /** Pull the (top) text out of a Vosk JSON result. */
+    fun text(json: String, key: String = "text"): String = texts(json, key).firstOrNull().orEmpty()
+
+    /** Every guess in a Vosk result, best first. Handles both plain and "alternatives" results. */
+    fun texts(json: String, key: String = "text"): List<String> = try {
+        val o = JSONObject(json)
+        val alts = o.optJSONArray("alternatives")
+        if (alts != null) {
+            (0 until alts.length()).map { alts.getJSONObject(it).optString(key, "").trim() }.filter { it.isNotEmpty() }
+        } else {
+            listOfNotNull(o.optString(key, "").trim().takeIf { it.isNotEmpty() })
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    companion object {
+        /** Guesses per sentence; Nova keeps the first one that is a real command. */
+        const val ALTERNATIVES = 4
+    }
 
     suspend fun listen(
         mic: Mic,
@@ -67,12 +88,15 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
         silenceStartMs: Long = 4_500,
         /** Receives the raw audio as it's heard (used to check the speaker's voice). */
         capture: ((ShortArray, Int) -> Unit)? = null,
+        /** Chooses among the guesses (best first). Default: the top guess. */
+        pick: (List<String>) -> String? = { it.firstOrNull() },
     ): String {
         val m = load()
         unloadJob?.cancel()
         try {
             return withContext(Dispatchers.Default) {
                 Recognizer(m, 16_000f).use { rec ->
+                    rec.setMaxAlternatives(ALTERNATIVES)
                     val buf = ShortArray(1600) // 100 ms
                     val start = SystemClock.elapsedRealtime()
                     var heard = false
@@ -82,8 +106,8 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
                         if (n <= 0) break
                         capture?.invoke(buf, n)
                         if (rec.acceptWaveForm(buf, n)) {
-                            val t = field(rec.result, "text")
-                            if (t.isNotBlank()) {
+                            val t = pick(texts(rec.result))
+                            if (!t.isNullOrBlank()) {
                                 text = t; break
                             }
                         } else {
@@ -96,7 +120,7 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
                         if (!heard && elapsed > silenceStartMs) break
                         if (elapsed > maxMs) break
                     }
-                    text ?: field(rec.finalResult, "text")
+                    text ?: pick(texts(rec.finalResult)).orEmpty()
                 }
             }
         } finally {
