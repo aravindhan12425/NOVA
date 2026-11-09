@@ -456,8 +456,14 @@ object CommandParser {
         return Command.Call(cleanName(who))
     }
 
+    /** Words a misheard name often turns into; never treated as a contact ("call that" -> "Who should I call?"). */
+    private val NOT_NAMES = setOf(
+        "me", "that", "this", "it", "him", "her", "them", "there", "those", "these", "what", "who", "the", "a",
+        "back", "now", "us", "you", "here", "then", "him back", "her back", "someone", "somebody", "anyone",
+    )
+
     private fun cleanName(s: String): String =
-        s.removePrefix("my ").removePrefix("the ").trim()
+        s.removePrefix("my ").removePrefix("the ").trim().takeUnless { it in NOT_NAMES }.orEmpty()
 
     private val DIGIT_WORDS = mapOf(
         "zero" to "0", "oh" to "0", "o" to "0", "one" to "1", "two" to "2", "three" to "3",

@@ -64,6 +64,28 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
     suspend fun newGrammarRecognizer(grammarJson: String): Recognizer =
         Recognizer(load(), 16_000f, grammarJson).also { unloadJob?.cancel() }
 
+    /**
+     * Recognises recorded [audio] again, allowing only the phrases in [grammarJson]
+     * (plus "[unk]"). Used to re-check a contact name against the user's real contacts.
+     */
+    suspend fun recognizeWith(grammarJson: String, audio: ShortArray): List<String> {
+        val m = load()
+        return withContext(Dispatchers.Default) {
+            Recognizer(m, 16_000f, grammarJson).use { rec ->
+                val parts = ArrayList<String>()
+                var i = 0
+                while (i < audio.size) {
+                    val n = minOf(1600, audio.size - i)
+                    // A phrase Vosk finishes by itself must be read now, or it's lost
+                    if (rec.acceptWaveForm(audio.copyOfRange(i, i + n), n)) parts += text(rec.result)
+                    i += n
+                }
+                parts += text(rec.finalResult)
+                listOf(parts.filter { it.isNotBlank() }.joinToString(" ")).filter { it.isNotBlank() }
+            }
+        }.also { scheduleUnload() }
+    }
+
     /** Pull the (top) text out of a Vosk JSON result. */
     fun text(json: String, key: String = "text"): String = texts(json, key).firstOrNull().orEmpty()
 

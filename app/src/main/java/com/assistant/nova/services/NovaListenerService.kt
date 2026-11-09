@@ -556,7 +556,12 @@ class NovaListenerService : Service() {
             // that is one ("good night … good morning" -> "good morning")
             val whole = phrases.joinToString(" ")
             val text = if (isCommand(whole)) whole else phrases.lastOrNull { isCommand(it) } ?: whole
-            return if (isOwnersCommand(text, audio.toShortArray())) text else null
+            val sound = audio.toShortArray()
+            if (!isOwnersCommand(text, sound)) return null
+            NovaState.engine.value = "Vosk (hands-free)"
+            lastHeardOffline = true
+            lastUtterance = sound
+            return text
         }
 
         private fun isCommand(text: String): Boolean =
@@ -772,7 +777,7 @@ class NovaListenerService : Service() {
         inCommand = true
         val focus = requestFocus()
         try {
-            val heard = typed ?: when (mode) {
+            val heardRaw = typed ?: when (mode) {
                 // Follow-on uses the silent offline recognizer: no beep, no Google sound every few seconds
                 Mode.FOLLOW_ON -> listenOffline(silenceStartMs = windowMs)
                 else -> {
@@ -780,6 +785,7 @@ class NovaListenerService : Service() {
                 }
             }
             NovaState.partial.value = ""
+            val heard = if (typed == null && !heardRaw.isNullOrBlank()) checkContactName(heardRaw) else heardRaw
             if (heard.isNullOrBlank()) {
                 if (!quiet) {
                     Log.i(TAG, "Nothing heard (${NovaState.engine.value})")
@@ -822,7 +828,8 @@ class NovaListenerService : Service() {
                 }
             }
             // No wake word: give a moment to cancel anything that could cause trouble if misheard
-            if (mode == Mode.DIRECT && commands.any(::risky)) {
+            // (Also in the follow-on window: no wake word was said there either)
+            if (mode != Mode.NORMAL && commands.any(::risky)) {
                 mic.close()
                 speaker.speak("${heard.replaceFirstChar { it.uppercase() }}?")
                 val answer = listenOffline(silenceStartMs = 2_500)
@@ -989,6 +996,7 @@ class NovaListenerService : Service() {
         if (offlineOnly) return listenOffline()
 
         NovaState.engine.value = if (online) "Phone recognizer (online)" else "Phone recognizer (offline)"
+        lastHeardOffline = false
         mic.close() // the phone's recognizer needs the microphone to itself
         return when (val r = recognizer.listen(offline = !online) { NovaState.partial.value = safeText(it) }) {
             is AndroidRecognizer.Result.Text -> {
@@ -1023,6 +1031,41 @@ class NovaListenerService : Service() {
         return a.all { it in -2..2 }
     }
 
+    /** True when the last sentence came from the offline engine (weak with names). */
+    @Volatile private var lastHeardOffline = false
+
+    private val contacts by lazy { com.assistant.nova.core.action.ContactsRepo(this) }
+
+    /**
+     * The offline engine doesn't know the user's contacts, so "call dad" can come out as
+     * "call that". When it heard a call, listen to the same recording again allowing only
+     * "call <a contact>" - "that" isn't a contact, "dad" is.
+     */
+    private suspend fun checkContactName(heard: String): String {
+        if (!lastHeardOffline) return heard
+        val call = CommandParser.parseAll(heard, prefs.unlockPhrase, routines.names()).singleOrNull() as? Command.Call
+            ?: return heard
+        if (call.who.isNotEmpty() && call.who.all { it.isDigit() }) return heard // a number
+        val audio = lastUtterance ?: return heard
+        val names = withContext(Dispatchers.IO) { runCatching { contacts.all() }.getOrDefault(emptyList()) }
+            .flatMap { c ->
+                val full = c.name.lowercase().replace(Regex("[^a-z ]"), " ").trim().replace(Regex("\\s+"), " ")
+                listOf(full, full.substringBefore(' '))
+            }
+            .filter { it.length >= 3 }
+            .distinct()
+            .take(600)
+        if (names.isEmpty()) return heard
+        val grammar = (names.map { "call $it" } + "[unk]").joinToString(",", "[", "]") { "\"$it\"" }
+        val again = runCatching { vosk.recognizeWith(grammar, audio) }.getOrNull()?.firstOrNull() ?: return heard
+        val name = again.removePrefix("call ").trim()
+        if (!again.startsWith("call ") || "[unk]" in again || name.length < 3) return heard
+        // Must really be one of the contacts (Vosk skips name words it doesn't know)
+        if (contacts.find(name, 0.85) == null) return heard
+        if (again != heard.lowercase()) Log.i(TAG, "Name check: “${safeText(heard)}” -> “${safeText(again)}”")
+        return again
+    }
+
     /** "turn off bluetooth" yes; "turn off", "set a timer", "call" not yet (more may be coming). */
     private fun isWholeCommand(text: String): Boolean =
         CommandParser.parseAll(text, prefs.unlockPhrase, routines.names()).none { CommandParser.isIncomplete(it) }
@@ -1036,6 +1079,7 @@ class NovaListenerService : Service() {
 
     private suspend fun listenOffline(silenceStartMs: Long = 4_500): String? {
         NovaState.engine.value = "Vosk (offline)"
+        lastHeardOffline = true
         if (!mic.open()) return null
         if (!vosk.isLoaded) show(Status.HEARING, "Loading offline speech…")
         val audio = ArrayList<Short>()

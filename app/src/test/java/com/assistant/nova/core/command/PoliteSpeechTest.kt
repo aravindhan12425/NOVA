@@ -46,6 +46,15 @@ class PoliteSpeechTest {
         assertEquals(Command.RunRoutine("good night"), CommandParser.parse("good night", "unlock", routines))
     }
 
+    @Test fun `misheard everyday words are not contact names`() {
+        // "call dad" misheard offline as "call that" once rang "G Thatha"
+        for (s in listOf("call that", "call me", "call this", "call him", "call it")) {
+            assertEquals("“$s”", Command.Call(""), p(s))
+        }
+        assertEquals(Command.Call("dad"), p("call dad"))
+        assertEquals(Command.Call("thatha"), p("call thatha"))
+    }
+
     @Test fun `small talk`() {
         assertEquals(Command.Chat("You're welcome!"), p("thank you nova"))
         assertEquals(Command.Chat("You're welcome!"), p("thanks"))
