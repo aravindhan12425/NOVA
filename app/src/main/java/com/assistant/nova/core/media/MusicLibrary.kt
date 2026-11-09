@@ -36,6 +36,52 @@ class MusicLibrary(private val context: Context) {
                     .none { it in p }
         }
 
+        /** Words that describe WHERE a folder is, not its name: "from audio in files in English musics". */
+        private val PLACE_WORDS = setOf(
+            "in", "from", "inside", "under", "of", "on", "at", "the", "my", "a", "files", "file", "fails", "manager",
+            "audio", "audios", "folder", "folders", "directory", "storage", "internal", "sd", "card", "memory", "phone",
+            "device", "downloads", "download", "section", "category", "tab",
+        )
+
+        /** "English musics" -> "english music": lowercase, punctuation gone, simple plurals dropped. */
+        internal fun folderWords(s: String): List<String> =
+            s.lowercase().replace(Regex("[^a-z0-9 ]"), " ").split(' ').filter { it.isNotBlank() }
+                .map { w -> if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w.dropLast(1) else w }
+
+        /**
+         * Finds the folder the user means among [folders] (e.g. "Music", "ENGLISH MUSIC").
+         * Copes with extra words around the name and plurals: "from audio in files in english musics",
+         * "files audio english music folder", "english songs". Null if nothing fits.
+         */
+        fun matchFolder(spoken: String, folders: Collection<String>): String? {
+            val said = folderWords(spoken).filter { it !in PLACE_WORDS }
+            if (said.isEmpty()) {
+                // Only place words ("play songs from audio"): a folder literally called that, if any
+                return folders.firstOrNull { folderWords(it) == folderWords(spoken).takeLast(1) }
+            }
+            val named = folders.associateWith { folderWords(it) }.filterValues { it.isNotEmpty() }
+            // 1. Exactly the folder's name
+            named.entries.firstOrNull { it.value == said }?.let { return it.key }
+            // 2. The folder's whole name appears in what was said: the longest such name wins
+            //    ("in files in english music" contains both "music" and "english music")
+            named.entries.filter { (_, w) -> said.windowed(w.size).any { it == w } }
+                .maxByOrNull { it.value.size }?.let { return it.key }
+            // 3. Close enough ("inglish music", "english songs")
+            val text = said.joinToString(" ")
+            return named.entries
+                .map { it.key to maxOf(FuzzyMatcher.score(text, it.value.joinToString(" ")), songsAsMusic(text, it.value)) }
+                .filter { it.second >= 0.7 }
+                .maxByOrNull { it.second }?.first
+        }
+
+        /** "english songs" vs a folder "English music": songs/music/tracks mean the same here. */
+        private fun songsAsMusic(said: String, folder: List<String>): Double {
+            val same = Regex("\\b(?:song|track|mp3|music|audio)\\b")
+            val a = same.replace(said, "music")
+            val b = same.replace(folder.joinToString(" "), "music")
+            return if (a == said && b == folder.joinToString(" ")) 0.0 else FuzzyMatcher.score(a, b)
+        }
+
         val PERMISSION: String =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO
             else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -97,8 +143,8 @@ class MusicLibrary(private val context: Context) {
         if (tracks.isEmpty()) return emptyList()
         if (!folder.isNullOrBlank()) {
             // "play songs from English music folder": that folder's songs, in order
-            val f = FuzzyMatcher.best(folder, folders().keys.toList(), 0.7) { it } ?: return emptyList()
-            return tracks.filter { it.folder == f.item }
+            val f = matchFolder(folder, folders().keys) ?: return emptyList()
+            return tracks.filter { it.folder == f }
         }
         if (query.isNullOrBlank()) {
             if (artist.isNullOrBlank()) return tracks.shuffled()
@@ -114,7 +160,7 @@ class MusicLibrary(private val context: Context) {
         // Not a song title? Maybe it's an artist or album name ("play Anirudh", "play Naruto OST")
         val byArtist = FuzzyMatcher.best(query, tracks.map { it.artist }.distinct().filter { it.isNotBlank() }, 0.85) { it }
         val byAlbum = FuzzyMatcher.best(query, tracks.map { it.album }.distinct().filter { it.isNotBlank() }, 0.85) { it }
-        val byFolder = FuzzyMatcher.best(query, folders().keys.toList(), 0.85) { it }
+        val byFolder = matchFolder(query, folders().keys)?.let { FuzzyMatcher.Match(it, it, 0.9) }
         val songScore = song?.score ?: 0.0
         return when {
             byFolder != null && byFolder.score > songScore -> tracks.filter { it.folder == byFolder.item }

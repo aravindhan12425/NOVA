@@ -192,8 +192,20 @@ class NovaListenerService : Service() {
     private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
         override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
             otherAppRecording = othersRecording(configs)
+            // Is Android giving Nova silence instead of the microphone (it does this to most apps
+            // during calls)? Logged so call problems can be diagnosed.
+            val mine = configs.firstOrNull { it.clientAudioSessionId == mic.sessionId }
+            val silenced = mine?.isClientSilenced == true
+            if (silenced != micSilenced) {
+                micSilenced = silenced
+                Log.i(TAG, "Microphone ${if (silenced) "MUTED by Android" else "available"} (call: $onCall, mode ${audioManager.mode})")
+                if (silenced && onCall) show(Status.PAUSED, "The phone mutes Nova's mic in this call. Open Nova and tap the mic.")
+            }
         }
     }
+
+    /** Android is currently feeding Nova silence instead of the microphone. */
+    @Volatile private var micSilenced = false
 
     /** When the last command finished: the phone's speech recognizer may still be letting go of the mic. */
     @Volatile private var commandEndedAt = 0L
