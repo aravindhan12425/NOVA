@@ -664,6 +664,77 @@ class NovaAccessibilityService : AccessibilityService() {
         return false
     }
 
+    // ── Spotify ─────────────────────────────────────────────────────────────
+    // On Spotify Free, "play from search" and the Liked Songs link only OPEN the page, and the
+    // big green Play button has no label. So Nova taps the first search result, then the
+    // first song of the list, which starts it playing (shuffled on Free).
+
+    private val spotifyPkg = "com.spotify.music"
+
+    private fun spotifyRoot(): AccessibilityNodeInfo? =
+        (
+            try {
+                windows.mapNotNull { it.root }
+            } catch (_: Exception) {
+                emptyList()
+            } + listOfNotNull(rootInActiveWindow)
+            ).firstOrNull { it.packageName?.toString() == spotifyPkg }
+
+    private fun top(n: AccessibilityNodeInfo): Int = Rect().also { n.getBoundsInScreen(it) }.top
+
+    /** Spotify's search results are showing: open the first one (a playlist, album or song). */
+    suspend fun spotifyOpenFirstResult(timeoutMs: Long = 6_000): Boolean = withContext(Dispatchers.Main) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            val first = spotifyRoot()?.findAccessibilityNodeInfosByViewId("$spotifyPkg:id/row_root")
+                ?.filter { it.isVisibleToUser }?.minByOrNull(::top)
+            if (first != null && click(first)) return@withContext true
+            delay(300)
+        }
+        false
+    }
+
+    /** A playlist, album or Liked Songs is open in Spotify: tap its first song to start playing. */
+    suspend fun spotifyPlayFirstSong(timeoutMs: Long = 6_000): Boolean = withContext(Dispatchers.Main) {
+        val dm = resources.displayMetrics
+        val skip = setOf("add to this playlist", "add songs", "find more", "add to playlist")
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            val root = spotifyRoot()
+            if (root != null) {
+                val rows = ArrayList<AccessibilityNodeInfo>()
+                val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+                var visited = 0
+                while (queue.isNotEmpty() && visited++ < 3_000) {
+                    val n = queue.removeFirst()
+                    for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+                    if (!n.isClickable || !n.isVisibleToUser) continue
+                    val r = Rect().also { n.getBoundsInScreen(it) }
+                    val h = r.height() / dm.density
+                    // A song row: (nearly) full width, one row tall, below the page header
+                    if (r.width() < dm.widthPixels * 0.85 || h !in 48f..120f || r.top < dm.heightPixels * 0.12) continue
+                    val label = firstText(n)?.lowercase()?.trim() ?: continue
+                    if (label in skip) continue
+                    rows += n
+                }
+                rows.minByOrNull(::top)?.let { if (click(it)) return@withContext true }
+            }
+            delay(300)
+        }
+        false
+    }
+
+    private fun firstText(n: AccessibilityNodeInfo): String? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(n) }
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 60) {
+            val c = queue.removeFirst()
+            c.text?.toString()?.takeIf { it.isNotBlank() }?.let { return it }
+            for (i in 0 until c.childCount) c.getChild(i)?.let(queue::addLast)
+        }
+        return null
+    }
+
     // ── WhatsApp ────────────────────────────────────────────────────────────
 
     /** Waits for WhatsApp's chat screen (opened with the message filled in) and presses Send. */

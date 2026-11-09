@@ -121,6 +121,12 @@ sealed interface Command {
     /** Play songs stored on the phone or SD card. Both null = shuffle the whole library. */
     data class PlayMusic(val query: String? = null, val artist: String? = null, val folder: String? = null) : Command
 
+    /**
+     * Play on Spotify: [liked] = the user's Liked Songs; otherwise Spotify's best match for
+     * [query] ("tamil party hits", "believer", or null = anything).
+     */
+    data class Spotify(val query: String? = null, val liked: Boolean = false) : Command
+
     data class Info(val query: InfoQuery) : Command
 
     data class Navigate(val action: NavAction) : Command

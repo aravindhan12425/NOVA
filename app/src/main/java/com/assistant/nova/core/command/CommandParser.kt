@@ -203,6 +203,7 @@ object CommandParser {
         parseAlarm(t, tokens, w)?.let { return it }
         parseNavigation(t, w)?.let { return it }
         parseOpen(b)?.let { return it }
+        parseSpotify(b)?.let { return it }
         parsePlayMusic(b)?.let { return it }
         parseVolume(tokens, w)?.let { return it }
         parseRinger(w)?.let { return it }
@@ -347,6 +348,59 @@ object CommandParser {
             }
         }
         return null
+    }
+
+    // ── Spotify ─────────────────────────────────────────────────────────────
+
+    private val ON_SPOTIFY = Regex("\\s*\\b(?:on|from|in|using|with|via|through) spotify\\b\\s*|^spotify\\s+|\\s+spotify$")
+    private val LIKED = Regex("\\b(?:liked|favourite|favorite|saved|loved) (?:songs?|list|music|tracks|playlist)\\b|\\bmy likes\\b|\\bliked list\\b")
+    private const val MOOD_WORDS = "party|dance|dancing|energetic|energy|high energy|hype|workout|gym|peppy|upbeat|kuthu|mass|" +
+        "chill|chilled|relax|relaxing|calm|lofi|lo fi|sleep|sleepy|soft|sad|emotional|breakup|love|romantic|melody|focus|study"
+    private val MOOD = listOf(
+        Regex("\\b($MOOD_WORDS) (?:songs?|music|tracks|playlist|vibes?|mood|hits|numbers|beats)\\b"),
+        Regex("\\bsomething(?: \\w+){0,2} ($MOOD_WORDS)\\b"),
+        Regex("\\b(?:songs?|music) for (?:a |the )?($MOOD_WORDS)\\b"),
+    )
+    private val TOP = Regex("\\b(?:top|hit|trending|latest|new|popular|chart) (?:\\w+ )?(?:songs|hits|music|tracks)\\b|\\btop hits\\b|\\bhits\\b")
+
+    /** Words for a kind of mood -> what to ask Spotify for. */
+    private fun moodQuery(mood: String): String = when (mood) {
+        "party", "dance", "dancing", "kuthu", "mass" -> "party hits"
+        "energetic", "energy", "high energy", "hype", "workout", "gym", "peppy", "upbeat" -> "energetic hits"
+        "chill", "chilled", "relax", "relaxing", "calm", "lofi", "lo fi", "soft" -> "chill songs"
+        "sleep", "sleepy" -> "sleep music"
+        "sad", "emotional", "breakup" -> "sad songs"
+        "love", "romantic", "melody" -> "love songs"
+        else -> "focus music"
+    }
+
+    /**
+     * "play my liked songs", "play believer on spotify", "I'm in party mood, play something
+     * energetic", "play top tamil hits". Plain "play a tamil song" stays on the phone's music.
+     */
+    private fun parseSpotify(b: String): Command? {
+        val named = ON_SPOTIFY.containsMatchIn(b)
+        if (LIKED.containsMatchIn(b)) return Command.Spotify(liked = true)
+        val language = b.split(' ').firstNotNullOfOrNull { com.assistant.nova.core.media.SongTags.SPOKEN[it] }
+            ?.takeIf { it != com.assistant.nova.core.media.SongTags.ANIME }
+        val lang = language?.replaceFirstChar { it.uppercase() }?.let { "$it " }.orEmpty()
+        MOOD.firstNotNullOfOrNull { it.find(b) }?.let { m ->
+            return Command.Spotify(lang + moodQuery(m.groupValues[1]))
+        }
+        // "play top tamil hits", "play anirudh hits", "play top hits from any language"
+        val playWords = Regex("^(?:play|put on|shuffle|give me)(?: me)?(?: some| the)? ")
+        if (playWords.containsMatchIn(b) && TOP.containsMatchIn(b)) {
+            val q = ON_SPOTIFY.replace(playWords.replace(b, ""), " ")
+                .replace(Regex("\\b(?:from |in |of )?any language\\b"), "")
+                .trim()
+            return Command.Spotify(q)
+        }
+        if (!named) return null
+        // "play believer on spotify", "spotify play anirudh songs"
+        val what = ON_SPOTIFY.replace(" $b ", " ").trim()
+            .replace(Regex("^(?:play|put on|start playing|start|shuffle|open)(?: me)?\\b"), "").trim()
+            .removePrefix("some ").trim()
+        return Command.Spotify(what.takeUnless { it.isEmpty() || it in setOf("music", "songs", "something", "anything", "it") })
     }
 
     // ── Music on the phone ──────────────────────────────────────────────────

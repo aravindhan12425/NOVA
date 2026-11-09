@@ -196,10 +196,25 @@ object Capabilities {
                 ),
                 Capability(
                     "Play your own songs",
-                    "Finds music on the phone and the SD card by title, artist or album. Controls appear in the " +
-                        "notification and on the lock screen.",
-                    tryEx("play my songs") + ex("play Naruto opening", "play Blue Bird by Ikimonogakari", "play songs by Anirudh"),
+                    "Finds music on the phone and the SD card by title, artist, album, folder or language " +
+                        "(Tamil, Hindi, Telugu, English, anime…). Controls appear in the notification and on the lock screen.",
+                    tryEx("play my songs") + ex(
+                        "play a Tamil song", "play anime songs", "play music from English music",
+                        "play Blue Bird by Ikimonogakari", "decrease the sound",
+                    ),
                     listOf(Requirement.MUSIC),
+                ),
+                Capability(
+                    "Spotify",
+                    "Plays your Spotify Liked Songs, or Spotify's best playlist for a mood, a language or top hits. " +
+                        "Works on Spotify Free too: Nova opens the playlist and starts it (shuffled on Free, after any ad). " +
+                        "Then “pause”, “next song” and “decrease the sound” control Spotify. Needs internet.",
+                    ex(
+                        "play my liked songs", "I'm in party mood, play something energetic", "play top Tamil hits",
+                        "play some chill songs", "play top hits from any language", "play Believer on Spotify",
+                    ),
+                    listOf(Requirement.ACCESSIBILITY),
+                    offline = false,
                 ),
             ),
         ),

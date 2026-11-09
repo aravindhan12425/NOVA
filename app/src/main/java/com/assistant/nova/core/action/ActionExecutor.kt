@@ -1,5 +1,6 @@
 package com.assistant.nova.core.action
 
+import android.app.SearchManager
 import android.Manifest
 import android.app.AlarmManager
 import android.app.KeyguardManager
@@ -193,6 +194,7 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         is Command.Search -> search(cmd)
         is Command.Define -> define(cmd.word)
         is Command.PlayMusic -> playMusic(cmd)
+        is Command.Spotify -> spotify(cmd)
         Command.IdentifySong -> identifySong()
         Command.Help -> Reply(
             "You can say things like: call mom, turn on Wi-Fi, set an alarm for 6 30 am, volume up, " +
@@ -1115,6 +1117,60 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         }
         // Start the music after Nova has finished talking
         return ok(speech, after = { player.play(queue) })
+    }
+
+    // ── Spotify ─────────────────────────────────────────────────────────────
+
+    private val spotifyPackage = "com.spotify.music"
+
+    private suspend fun spotifyPlaying(): Boolean {
+        // Give it a moment: Spotify buffers before sound starts
+        repeat(4) {
+            if (audio.isMusicActive) return true
+            delay(400)
+        }
+        return audio.isMusicActive
+    }
+
+    /**
+     * Uses what Spotify offers every app (no account setup): "play from search", the same
+     * request Google Assistant sends, and a link to Liked Songs.
+     */
+    private suspend fun spotify(cmd: Command.Spotify): Reply {
+        if (!apps.isInstalled(spotifyPackage)) {
+            if (cmd.liked) return Reply("Spotify isn't installed, so I can't play your liked songs.")
+            // No Spotify: do the closest thing with the songs on the phone
+            return playMusic(Command.PlayMusic(query = SongTags.SPOKEN.keys.firstOrNull { cmd.query.orEmpty().lowercase().contains(it) }))
+        }
+        // Stop Nova's own player so the music buttons (and "pause", "next") go to Spotify
+        if (player.current != null) player.stop()
+        val svc = NovaAccessibilityService.instance
+        if (cmd.liked) {
+            val opened = launch(
+                Intent(Intent.ACTION_VIEW, Uri.parse("spotify:collection:tracks")).setPackage(spotifyPackage),
+            )
+            if (!opened) return Reply("I couldn't open Spotify.")
+            delay(1_500)
+            if (!spotifyPlaying() && svc?.spotifyPlayFirstSong() != true) {
+                return Reply("I opened your liked songs on Spotify. Tap play to start.")
+            }
+            return ok("Playing your liked songs on Spotify.")
+        }
+        val q = cmd.query.orEmpty()
+        val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+            .setPackage(spotifyPackage)
+            .putExtra(SearchManager.QUERY, q)
+            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+        if (!launch(intent)) return Reply("I couldn't open Spotify.")
+        val what = if (q.isBlank()) "Spotify" else "$q on Spotify"
+        // Premium starts the best match by itself; Free only shows the results
+        delay(2_500)
+        if (spotifyPlaying()) return ok("Playing $what.")
+        if (q.isNotBlank() && svc != null && svc.spotifyOpenFirstResult()) {
+            delay(2_000)
+            if (spotifyPlaying() || svc.spotifyPlayFirstSong()) return ok("Playing $what.")
+        }
+        return Reply("I found $what. Tap play to start.")
     }
 
     // ── Voice unlock ────────────────────────────────────────────────────────
