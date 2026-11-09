@@ -32,6 +32,7 @@ import com.assistant.nova.core.action.CallAssistant
 import com.assistant.nova.core.command.CallAnswer
 import com.assistant.nova.core.command.CallPhrases
 import com.assistant.nova.core.command.InCallAction
+import com.assistant.nova.core.command.MediaAction
 import com.assistant.nova.core.command.TextNormalizer
 import com.assistant.nova.core.voiceid.VoiceId
 import org.vosk.Recognizer
@@ -446,9 +447,12 @@ class NovaListenerService : Service() {
                         if (handleCommand(engine)) followOnWindow(engine)
                     }
                     Trigger.DIRECT -> {
-                        val text = pendingDirect
+                        val rough = pendingDirect
                         pendingDirect = null
-                        if (text != null && handleCommand(engine, text, mode = Mode.DIRECT)) followOnWindow(engine)
+                        if (rough != null) {
+                            val text = recheckOffline(rough)
+                            if (directAllowed(text) && handleCommand(engine, text, mode = Mode.DIRECT)) followOnWindow(engine)
+                        }
                     }
                     Trigger.CALL -> {
                         val phrase = pendingCall
@@ -569,32 +573,76 @@ class NovaListenerService : Service() {
         private fun isCommand(text: String): Boolean =
             CommandParser.parseAll(text, prefs.unlockPhrase, routines.names()).none { it is Command.Unknown }
 
+        /**
+         * First pass, on the small offline engine's rough words: is this the owner, saying
+         * something that sounds like a command? The exact words are checked later, after the
+         * phone's recognizer has re-heard the recording ([directAllowed]).
+         */
         private fun isOwnersCommand(text: String, sound: ShortArray): Boolean {
+            val basic = TextNormalizer.basic(text)
             val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
-            // One word ("next", "pause") is too easy to say by accident; a routine's own name is fine
-            val words = TextNormalizer.basic(text).split(' ').size
-            // While music plays: only music commands ("pause", "next song", "decrease the sound"),
-            // and then a single word is fine. The song's own singer won't pass the voice check.
-            val music = audioManager.isMusicActive
-            val musicOnly = commands.all { it is Command.Media || it is Command.Volume || it is Command.Cancel }
-            if (music && !musicOnly) {
-                if (verboseLogs) Log.i(TAG, "Direct: music playing, ignored “$text”")
+            val commandLike = commands.none { it is Command.Unknown } || COMMAND_START.containsMatchIn(basic)
+            if (!commandLike) {
+                Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}not a command")
                 return false
             }
-            if (words < 2 && commands.none { it is Command.RunRoutine } && !(music && musicOnly)) return false
-            // Small talk ("thank you") is never acted on without the wake word: it may be meant for someone else
-            // ("stop" is fine while music plays: it pauses the music)
-            val stopMusic = music && commands.all { it is Command.Cancel }
-            if (!stopMusic && commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat }) {
-                Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else "$words words, "}not a command")
-                return false
-            }
+            // One word ("next", "pause") is too easy to say by accident, except while music plays
+            val words = basic.split(' ').size
+            if (words < 2 && !audioManager.isMusicActive && commands.none { it is Command.RunRoutine }) return false
             val score = runCatching { voiceId.score(sound) }.getOrNull()
             val ok = score != null && score >= voiceId.threshold
             Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}voice match ${score?.let { "%.2f".format(it) }} " +
                 "(needs %.2f) -> ${if (ok) "run" else "ignore"}".format(voiceId.threshold))
             return ok
         }
+    }
+
+    /** How commands start (after "can you please" etc. is removed): play, call, turn, open… */
+    private val COMMAND_START = Regex(
+        "^(?:play|call|turn|switch|open|set|send|message|text|whatsapp|volume|increase|decrease|reduce|lower|" +
+            "raise|pause|stop|next|previous|skip|search|google|what|whats|how|tell|start|shuffle|take|put|show|read|" +
+            "remind|mute|unmute|answer|reject|end|cut|good|define|spell|navigate|go|lock|enable|disable|close|" +
+            "resume|find|identify|note|add|clear|wake|lights?|torch|flashlight|wifi|bluetooth|hotspot)(?: |$)",
+    )
+
+    /**
+     * Second pass for no-wake-word mode, on the words the phone's recognizer heard: only real
+     * commands, never small talk or unlocking, and only music commands while music plays.
+     */
+    private fun directAllowed(text: String): Boolean {
+        val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
+        val words = TextNormalizer.basic(text).split(' ').size
+        val music = audioManager.isMusicActive
+        val musicOnly = commands.all { it is Command.Media || it is Command.Volume || it is Command.Cancel }
+        val why = when {
+            music && !musicOnly -> "music playing, only music commands"
+            words < 2 && !(music && musicOnly) && commands.none { it is Command.RunRoutine } -> "one word"
+            // "stop" is fine while music plays: it pauses the music
+            music && commands.all { it is Command.Cancel } -> null
+            // Small talk ("thank you") may be meant for someone else; unlocking needs the wake word
+            commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat } ->
+                "not a command"
+            else -> null
+        }
+        if (why != null) Log.i(TAG, "Direct: ${if (verboseLogs) "“$text” " else ""}ignored ($why)")
+        return why == null
+    }
+
+    /**
+     * The small offline engine often mishears ("play a Tamil song" -> "play some congress and").
+     * Give the same recording to the phone's recognizer (on-device first, so it stays on the
+     * phone) and use its words instead. Falls back to the offline words.
+     */
+    private suspend fun recheckOffline(offlineText: String): String {
+        val audio = lastUtterance ?: return offlineText
+        // A spoken PIN never leaves the phone
+        val online = DeviceProfile.isOnline(this) && prefs.engine != NovaPrefs.ENGINE_OFFLINE &&
+            !(prefs.voiceUnlock && isLocked)
+        val r = runCatching { recognizer.transcribe(audio, onlineAllowed = online) }.getOrNull()
+        if (r !is AndroidRecognizer.Result.Text) return offlineText
+        val best = bestGuess(r.alternatives) ?: r.text
+        Log.i(TAG, "Re-heard by the phone's recognizer" + if (verboseLogs) ": “$offlineText” -> “$best”" else "")
+        return best
     }
 
     /** Reads the mic and runs the wake-word engine until something happens. Runs off the main thread. */
@@ -797,7 +845,13 @@ class NovaListenerService : Service() {
                 }
             }
             NovaState.partial.value = ""
-            val heard = if (typed == null && !heardRaw.isNullOrBlank()) checkContactName(heardRaw) else heardRaw
+            val heard = if (typed == null && !heardRaw.isNullOrBlank()) {
+                val better = if (lastHeardOffline && !onCall) recheckOffline(heardRaw) else heardRaw
+                // Still the offline engine's words: at least check a heard name against the contacts
+                if (better == heardRaw) checkContactName(heardRaw) else better
+            } else {
+                heardRaw
+            }
             if (heard.isNullOrBlank()) {
                 if (!quiet) {
                     Log.i(TAG, "Nothing heard (${NovaState.engine.value})")
@@ -815,6 +869,14 @@ class NovaListenerService : Service() {
             if (quiet && commands.all { it is Command.Unknown || it is Command.Cancel }) {
                 // Probably just talking, not a command: ignore it silently
                 if (verboseLogs) Log.i(TAG, "($mode) not a command: “${safeText(heard)}”")
+                return false
+            }
+            if (quiet && commands == listOf(Command.Media(MediaAction.PLAY)) && player.current == null &&
+                TextNormalizer.basic(heard) in setOf("play", "resume")
+            ) {
+                // Without a wake word a lone "play" is usually a cut-off "play a Tamil song": don't
+                // resume whatever app played last (it started Spotify once)
+                Log.i(TAG, "($mode) lone “play” ignored")
                 return false
             }
             if (mode == Mode.FOLLOW_ON) usage.countCommand()

@@ -1,6 +1,9 @@
 package com.assistant.nova.ui.screens
 
 import android.Manifest
+import com.assistant.nova.core.speech.AndroidRecognizer
+import androidx.compose.runtime.LaunchedEffect
+import android.widget.Toast
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +90,12 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
     var callAssistant by remember { mutableStateOf(prefs.callAssistant) }
     var handsFree by remember { mutableStateOf(prefs.directMode) }
     var voiceEnrolled by remember { mutableStateOf(VoiceId(context).isEnrolled) }
+    // Google's on-device speech pack: lets Nova re-check what the small offline engine heard
+    var speechPackMissing by remember { mutableStateOf(false) }
+    var resumes by remember { mutableIntStateOf(0) }
+    LaunchedEffect(resumes) {
+        speechPackMissing = runCatching { AndroidRecognizer(context).hasOnDevicePack() }.getOrNull() == false
+    }
 
     LifecycleResumeEffect(Unit) {
         handsFree = prefs.directMode
@@ -95,6 +104,7 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
         alwaysOn = prefs.alwaysOn
         callAssistant = prefs.callAssistant
         usage = UsageTracker.today(context)
+        resumes++
         onPauseOrDispose {}
     }
 
@@ -283,6 +293,23 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
             }
         }
 
+        if (speechPackMissing) {
+            item(key = "speechpack") {
+                LinkCard(
+                    "Hear me better without “Hey Jarvis”",
+                    "Tap to download Google's English (India) speech pack for this phone (one time). Then Nova " +
+                        "double-checks what it heard, and the words stay on the phone.",
+                    onClick = {
+                        val started = AndroidRecognizer(context).downloadOnDevicePack()
+                        Toast.makeText(
+                            context,
+                            if (started) "Download started. It can take a few minutes." else "Couldn't start the download on this phone.",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    },
+                ) { Icon(Icons.Default.Warning, contentDescription = null, tint = Warn) }
+            }
+        }
         item(key = "capabilities") {
             LinkCard("What Nova can do", "Every feature, with examples you can try", onCapabilities) {
                 Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = NeonBlue)
