@@ -517,12 +517,12 @@ class NovaListenerService : Service() {
         private var speaking = false
         private var quietMs = 0
         private var speechMs = 0
-        /** Words Vosk already finalised inside this sentence (it ends a phrase after ~0.5 s of quiet). */
-        private val finished = StringBuilder()
+        /** Phrases Vosk already finalised inside this sentence (it ends a phrase after ~0.5 s of quiet). */
+        private val finished = ArrayList<String>()
 
         private fun feed(c: ShortArray, n: Int) {
             if (rec.acceptWaveForm(c, n)) {
-                vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished.append(' ').append(it) }
+                vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished += it }
             }
         }
 
@@ -546,13 +546,21 @@ class NovaListenerService : Service() {
             if (quietMs < 800 && speechMs < 7_000) return null
             // Sentence finished
             speaking = false
-            // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova
+            // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova.
             // (Before, only finalResult was read, which is empty when Vosk had already ended the
             // phrase by itself: then every hands-free command was silently lost.)
-            val text = TextNormalizer.collapse("$finished ${vosk.text(rec.finalResult)}")
+            val phrases = (finished + vosk.text(rec.finalResult)).filter { it.isNotBlank() }
             finished.clear()
-            return if (text.isNotBlank() && isOwnersCommand(text, audio.toShortArray())) text else null
+            if (phrases.isEmpty()) return null
+            // The whole thing if it's one command ("turn off … bluetooth"), else the last phrase
+            // that is one ("good night … good morning" -> "good morning")
+            val whole = phrases.joinToString(" ")
+            val text = if (isCommand(whole)) whole else phrases.lastOrNull { isCommand(it) } ?: whole
+            return if (isOwnersCommand(text, audio.toShortArray())) text else null
         }
+
+        private fun isCommand(text: String): Boolean =
+            CommandParser.parseAll(text, prefs.unlockPhrase, routines.names()).none { it is Command.Unknown }
 
         private fun isOwnersCommand(text: String, sound: ShortArray): Boolean {
             val commands = CommandParser.parseAll(text, prefs.unlockPhrase, routines.names())
@@ -1015,6 +1023,10 @@ class NovaListenerService : Service() {
         return a.all { it in -2..2 }
     }
 
+    /** "turn off bluetooth" yes; "turn off", "set a timer", "call" not yet (more may be coming). */
+    private fun isWholeCommand(text: String): Boolean =
+        CommandParser.parseAll(text, prefs.unlockPhrase, routines.names()).none { CommandParser.isIncomplete(it) }
+
     /** The first of the recognizer's guesses that is a real command (else the top guess). */
     private fun bestGuess(guesses: List<String>): String? =
         CommandParser.bestOf(guesses, prefs.unlockPhrase, routines.names())
@@ -1033,6 +1045,7 @@ class NovaListenerService : Service() {
                 onPartial = { NovaState.partial.value = safeText(it, aggressive = prefs.voiceUnlock) },
                 silenceStartMs = silenceStartMs,
                 pick = ::bestGuess,
+                isComplete = ::isWholeCommand,
                 capture = { b, n -> if (audio.size < 16_000 * 10) for (i in 0 until n) audio += b[i] },
             ).also { lastUtterance = audio.toShortArray() }
         } catch (e: Exception) {

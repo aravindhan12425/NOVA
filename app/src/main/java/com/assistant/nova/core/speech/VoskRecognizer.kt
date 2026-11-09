@@ -94,6 +94,12 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
         capture: ((ShortArray, Int) -> Unit)? = null,
         /** Chooses among the guesses (best first). Default: the top guess. */
         pick: (List<String>) -> String? = { it.firstOrNull() },
+        /**
+         * Whether what's been heard so far is a whole command. While it isn't ("turn off…"),
+         * a short pause doesn't end the listening: Nova waits [continueMs] for the rest.
+         */
+        isComplete: (String) -> Boolean = { true },
+        continueMs: Long = 1_600,
     ): String {
         val m = load()
         unloadJob?.cancel()
@@ -105,26 +111,40 @@ class VoskRecognizer(private val context: Context, private val scope: CoroutineS
                     val start = SystemClock.elapsedRealtime()
                     var heard = false
                     var text: String? = null
+                    // Vosk ends a phrase at every ~0.5 s pause: "turn off" … "bluetooth" arrive as two
+                    val parts = ArrayList<String>()
+                    var lastSpeech = start
                     while (isActive) {
                         val n = mic.read(buf)
                         if (n <= 0) break
                         capture?.invoke(buf, n)
+                        val now = SystemClock.elapsedRealtime()
                         if (rec.acceptWaveForm(buf, n)) {
                             val t = pick(texts(rec.result))
                             if (!t.isNullOrBlank()) {
-                                text = t; break
+                                parts += t
+                                lastSpeech = now
+                                val soFar = parts.joinToString(" ")
+                                if (isComplete(soFar)) {
+                                    text = soFar; break
+                                }
                             }
                         } else {
                             val p = field(rec.partialResult, "partial")
                             if (p.isNotBlank()) {
-                                heard = true; onPartial(p)
+                                heard = true
+                                lastSpeech = now
+                                onPartial((parts + p).joinToString(" "))
                             }
                         }
-                        val elapsed = SystemClock.elapsedRealtime() - start
-                        if (!heard && elapsed > silenceStartMs) break
-                        if (elapsed > maxMs) break
+                        val elapsed = now - start
+                        if (!heard && parts.isEmpty() && elapsed > silenceStartMs) break
+                        // Part of a command heard, then nothing more for a while: that's all there is
+                        if (parts.isNotEmpty() && now - lastSpeech > continueMs) break
+                        if (elapsed > maxMs + if (parts.isNotEmpty()) 3_000 else 0) break
                     }
-                    text ?: pick(texts(rec.finalResult)).orEmpty()
+                    text ?: (parts + listOfNotNull(pick(texts(rec.finalResult))))
+                        .filter { it.isNotBlank() }.joinToString(" ")
                 }
             }
         } finally {
