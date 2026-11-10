@@ -111,9 +111,15 @@ class NovaAccessibilityService : AccessibilityService() {
     suspend fun setQuickSetting(feature: Feature, desired: Boolean?, systemState: () -> Boolean?): QsResult = mutex.withLock {
         withContext(Dispatchers.Main) {
             performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
-            delay(700)
             try {
-                val candidates = findTileCandidates(feature)
+                // Start as soon as the tile shows up (usually well under the old fixed 0.7 s)
+                var candidates = emptyList<AccessibilityNodeInfo>()
+                val ready = SystemClock.uptimeMillis() + 1_200
+                while (SystemClock.uptimeMillis() < ready) {
+                    delay(100)
+                    candidates = findTileCandidates(feature)
+                    if (candidates.isNotEmpty()) break
+                }
                 if (candidates.isEmpty()) {
                     Log.w(tag, "$feature: no tile found")
                     return@withContext QsResult.NOT_FOUND
@@ -141,7 +147,7 @@ class NovaAccessibilityService : AccessibilityService() {
                     // Wait up to 2.5 s for the switch to change (Wi-Fi takes a moment)
                     val deadline = SystemClock.uptimeMillis() + 2_500
                     while (SystemClock.uptimeMillis() < deadline) {
-                        delay(250)
+                        delay(120)
                         val now = stateNow(node)
                         val changed = when {
                             now == null || before == null -> true // can't tell: trust the tap
@@ -458,14 +464,23 @@ class NovaAccessibilityService : AccessibilityService() {
     private suspend fun closeShade() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
-            delay(350)
+            if (waitClosed(400)) return
         }
         repeat(2) {
             if (!shadeOpen()) return
             Log.i(tag, "Quick Settings still open: pressing Back")
             performGlobalAction(GLOBAL_ACTION_BACK)
-            delay(350)
+            if (waitClosed(400)) return
         }
+    }
+
+    private suspend fun waitClosed(ms: Long): Boolean {
+        val deadline = SystemClock.uptimeMillis() + ms
+        while (SystemClock.uptimeMillis() < deadline) {
+            delay(100)
+            if (!shadeOpen()) return true
+        }
+        return false
     }
 
     /** Quick Settings is open when the system UI shows on/off switches (the status bar never does). */

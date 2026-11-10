@@ -906,7 +906,7 @@ class NovaListenerService : Service() {
             if (mode != Mode.NORMAL && commands.any(::risky)) {
                 mic.close()
                 speaker.speak("${heard.replaceFirstChar { it.uppercase() }}?")
-                val answer = listenOffline(silenceStartMs = 2_500)
+                val answer = listenOffline(silenceStartMs = 1_500)
                 if (answer != null && cancelWords.containsMatchIn(TextNormalizer.basic(answer))) {
                     NovaState.addExchange(safeText(heard), "Cancelled")
                     speaker.speak("Cancelled.")

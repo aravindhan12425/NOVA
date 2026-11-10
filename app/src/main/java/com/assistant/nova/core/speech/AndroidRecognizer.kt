@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
@@ -83,6 +84,9 @@ class AndroidRecognizer(private val context: Context) {
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, offline)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        // Finish sooner after the user stops talking (recognizers may round this up)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(HINTS))
         }
@@ -190,6 +194,7 @@ class AndroidRecognizer(private val context: Context) {
     // Engines that turned out not to accept recordings, so they aren't tried every time
     @Volatile private var onDeviceClips: Boolean? = null
     @Volatile private var onlineClips: Boolean? = null
+    @Volatile private var packMissingUntil = 0L
 
     /**
      * Writes down an already-recorded sentence (16 kHz mono): used to double-check what the
@@ -201,7 +206,7 @@ class AndroidRecognizer(private val context: Context) {
     suspend fun transcribe(audio: ShortArray, onlineAllowed: Boolean): Result {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || audio.size < 4_000) return Result.Failed(-1)
         val engines = buildList {
-            if (isOnDeviceAvailable() && onDeviceClips != false) add(true)
+            if (isOnDeviceAvailable() && onDeviceClips != false && SystemClock.elapsedRealtime() > packMissingUntil) add(true)
         }
         for (onDevice in engines) {
             val r = transcribeWith(onDevice, audio)
@@ -209,6 +214,10 @@ class AndroidRecognizer(private val context: Context) {
             val unsupported = r is Result.Failed &&
                 r.code in listOf(SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT)
             if (onDevice) onDeviceClips = !unsupported else onlineClips = !unsupported
+            // Speech pack not downloaded: skip the re-check for a while instead of losing time on every command
+            if (onDevice && r is Result.Failed && r.code == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
+                packMissingUntil = SystemClock.elapsedRealtime() + 10 * 60_000L
+            }
             Log.i(
                 TAG,
                 "Recording re-check (${if (onDevice) "on-device" else "online"}): ${r::class.simpleName}" +

@@ -418,6 +418,8 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
                 "Opened ${f.spoken} settings. Turn on Nova in Accessibility so I can switch it myself.",
             )
         }
+        // Already as asked (Android can tell for Wi-Fi, Bluetooth…): no need to open the panel
+        if (desired != null && currentState(f) == desired) return ok("${f.title()} is already ${onOff(desired)}.")
         return when (svc.setQuickSetting(f, desired) { currentState(f) }) {
             NovaAccessibilityService.QsResult.ALREADY ->
                 ok(if (desired != null) "${f.title()} is already ${onOff(desired)}." else "${f.title()} is unchanged.")
@@ -927,21 +929,31 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
      * Runs every action of a routine in order. Quiet like any confirmation, but answers
      * ("when is my next alarm") and problems ("couldn't find the Wi-Fi tile") are spoken.
      */
+    private val PROBLEM = Regex("(?i)couldn|can't|cannot|didn't|need|permission|isn't|not allowed|failed|still looks")
+
     private suspend fun runRoutine(name: String): Reply {
         val routine = routines.find(name) ?: return Reply("I couldn't find the $name routine.")
         val replies = ArrayList<Reply>()
+        val worthSaying = ArrayList<String>()
         for (action in routine.actions) {
             for (c in CommandParser.parseAll(action)) {
                 if (c is Command.Unlock || c is Command.RunRoutine) continue // never from a routine
-                replies += try {
+                val r = try {
                     execute(c)
                 } catch (e: Exception) {
                     Reply("“$action” didn't work.")
                 }
+                replies += r
+                // Speak answers (the date, the battery…) and problems; switches just happen quietly
+                val answer = c is Command.Info || c is Command.Calculate || c is Command.Convert ||
+                    c is Command.DaysUntil || c is Command.Define || c is Command.ReadNotes || c is Command.Spell
+                if (r.speech.isNotBlank() && (answer || (!r.confirmation && PROBLEM.containsMatchIn(r.speech)))) {
+                    worthSaying += r.speech
+                }
             }
         }
         val title = name.replaceFirstChar { it.uppercase() }
-        val spoken = replies.filter { !it.confirmation }.map { it.speech }.filter { it.isNotBlank() }
+        val spoken = worthSaying
         val display = "$title: " + replies.map { it.display }.filter { it.isNotBlank() }.joinToString(" · ")
         val afters = replies.mapNotNull { it.after }
         val after: (suspend () -> Unit)? = if (afters.isEmpty()) null else ({ afters.forEach { it() } })
