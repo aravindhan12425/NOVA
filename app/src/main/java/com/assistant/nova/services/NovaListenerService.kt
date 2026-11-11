@@ -524,11 +524,14 @@ class NovaListenerService : Service() {
         private var speechMs = 0
         /** Phrases Vosk already finalised inside this sentence (it ends a phrase after ~0.5 s of quiet). */
         private val finished = ArrayList<String>()
+        /** Background loudness (fan, traffic, TV): "quiet" means quiet compared with this. */
+        private var noise = 120.0
 
-        private fun feed(c: ShortArray, n: Int) {
-            if (rec.acceptWaveForm(c, n)) {
-                vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished += it }
-            }
+        /** Returns true when Vosk finished a phrase with this chunk. */
+        private fun feed(c: ShortArray, n: Int): Boolean {
+            if (!rec.acceptWaveForm(c, n)) return false
+            vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished += it }
+            return true
         }
 
         fun step(buf: ShortArray, n: Int): String? {
@@ -536,22 +539,33 @@ class NovaListenerService : Service() {
             for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
             val rms = sqrt(sum / n)
             val chunk = buf.copyOf(n)
+            val startLevel = maxOf(300.0, noise * 2.2)
+            val quietLevel = maxOf(220.0, noise * 1.4)
             if (!speaking) {
                 preroll.addLast(chunk); if (preroll.size > 4) preroll.removeFirst()
-                if (rms < 300) return null
+                if (rms < startLevel) {
+                    noise = noise * 0.95 + rms * 0.05 // learn the room while nobody speaks
+                    return null
+                }
                 speaking = true; quietMs = 0; speechMs = 0; audio.clear(); finished.clear()
                 for (c in preroll) { feed(c, c.size); c.forEach { audio += it } }
                 preroll.clear()
                 return null
             }
-            feed(chunk, n)
+            val phraseDone = feed(chunk, n)
             if (audio.size < 16_000 * 8) chunk.forEach { audio += it }
             speechMs += 80
-            quietMs = if (rms < 220) quietMs + 80 else 0
-            val maxSpeech = if (audioManager.isMusicActive) 3_500 else 7_000
-            if (quietMs < 800 && speechMs < maxSpeech) return null
+            quietMs = if (rms < quietLevel) quietMs + 80 else 0
+            val maxSpeech = if (audioManager.isMusicActive) 3_500 else 5_000
+            // A whole command is already there ("turn on the flashlight"): act now instead of
+            // waiting for silence, which never comes in a noisy room
+            val complete = phraseDone && finished.isNotEmpty() && isWholeCommand(finished.joinToString(" "))
+            if (!complete && quietMs < 800 && speechMs < maxSpeech) return null
             // Sentence finished
             speaking = false
+            Log.i(TAG, "Direct: sentence of %.1f s, ended by %s (noise %.0f)".format(
+                speechMs / 1000.0, if (complete) "a whole command" else if (quietMs >= 800) "quiet" else "the time limit", noise,
+            ))
             // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova.
             // (Before, only finalResult was read, which is empty when Vosk had already ended the
             // phrase by itself: then every hands-free command was silently lost.)
