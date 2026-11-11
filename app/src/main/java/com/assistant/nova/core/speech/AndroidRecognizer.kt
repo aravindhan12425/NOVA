@@ -57,11 +57,14 @@ class AndroidRecognizer(private val context: Context) {
      */
     private val googleRecognizer: ComponentName? by lazy {
         val services = context.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
-        listOf("com.google.android.tts", "com.google.android.googlequicksearchbox").firstNotNullOfOrNull { pkg ->
+        (listOfNotNull(preferredPackage) + listOf("com.google.android.tts", "com.google.android.googlequicksearchbox")).firstNotNullOfOrNull { pkg ->
             services.firstOrNull { it.serviceInfo.packageName == pkg }
                 ?.let { ComponentName(it.serviceInfo.packageName, it.serviceInfo.name) }
         }
     }
+
+    /** Test hook: try this recognizer package first (set before first use). */
+    var preferredPackage: String? = null
 
     fun isAvailable(): Boolean = googleRecognizer != null || SpeechRecognizer.isRecognitionAvailable(context)
 
@@ -93,16 +96,18 @@ class AndroidRecognizer(private val context: Context) {
     }
 
     /** Runs one recognition with [sr] and [intent]; [started] is called once it's listening. */
-    private suspend fun run(
+    private suspend fun recognizeOnce(
         sr: SpeechRecognizer,
         intent: Intent,
         timeoutMs: Long,
         onPartial: (String) -> Unit,
+        trace: Boolean = false,
         started: () -> Unit = {},
     ): Result = withTimeoutOrNull(timeoutMs) {
         suspendCancellableCoroutine<Result> { cont ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onResults(results: Bundle?) {
+                    if (trace) Log.i(TAG, "  results: " + results?.keySet()?.joinToString { k -> "$k=${results.get(k)}" })
                     val all = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
                         .filter { it.isNotBlank() }
                     if (cont.isActive) cont.resume(if (all.isEmpty()) Result.NoSpeech else Result.Text(all.first(), all))
@@ -114,6 +119,7 @@ class AndroidRecognizer(private val context: Context) {
                 }
 
                 override fun onError(error: Int) {
+                    if (trace) Log.i(TAG, "  recognizer error $error")
                     val r = when (error) {
                         SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Result.NoSpeech
                         else -> Result.Failed(error)
@@ -121,23 +127,48 @@ class AndroidRecognizer(private val context: Context) {
                     if (cont.isActive) cont.resume(r)
                 }
 
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
+                override fun onReadyForSpeech(params: Bundle?) { if (trace) Log.i(TAG, "  ready") }
+                override fun onBeginningOfSpeech() { if (trace) Log.i(TAG, "  speech began") }
                 override fun onRmsChanged(rmsdB: Float) {}
                 override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
+                override fun onEndOfSpeech() { if (trace) Log.i(TAG, "  speech ended") }
+                override fun onEvent(eventType: Int, params: Bundle?) { if (trace) Log.i(TAG, "  event $eventType") }
             })
             sr.startListening(intent)
             started()
         }
-    } ?: Result.NoSpeech
+    } ?: Result.NoSpeech.also { if (trace) Log.i(TAG, "  no answer within ${timeoutMs / 1000} s") }
 
-    /** Listens on the microphone for one sentence. */
+    private val speechPrefs by lazy { context.getSharedPreferences("nova_speech", Context.MODE_PRIVATE) }
+
+    /**
+     * Whether Google's offline speech pack for [language] works (null = not tried yet).
+     * With it, Nova hears accurately with no internet and nothing leaves the phone.
+     */
+    val offlinePackOk: Boolean?
+        get() = if (speechPrefs.contains("pack_$language")) speechPrefs.getBoolean("pack_$language", false) else null
+
+    /**
+     * Listens on the microphone for one sentence with Google's engine. [offline] = use its
+     * downloaded pack (fast, private). (Android's own on-device service isn't used: on some
+     * phones it has no languages at all and just returns nothing.)
+     */
     suspend fun listen(offline: Boolean, onPartial: (String) -> Unit): Result = withContext(Dispatchers.Main) {
-        val sr = create(onDevice = offline && isOnDeviceAvailable())
+        val sr = create(onDevice = false)
         try {
-            run(sr, baseIntent(offline).putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true), 15_000, onPartial)
+            val r = recognizeOnce(sr, baseIntent(offline).putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true), 15_000, onPartial)
+            if (offline) {
+                val ok = when {
+                    r is Result.Failed && r.code == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> false
+                    r is Result.Failed -> null
+                    else -> true
+                }
+                if (ok != null && ok != offlinePackOk) {
+                    speechPrefs.edit().putBoolean("pack_$language", ok).apply()
+                    Log.i(TAG, "Offline speech pack for $language: ${if (ok) "works" else "missing"}")
+                }
+            }
+            r
         } finally {
             sr.destroy()
         }
@@ -160,6 +191,8 @@ class AndroidRecognizer(private val context: Context) {
                             object : android.speech.RecognitionSupportCallback {
                                 override fun onSupportResult(support: android.speech.RecognitionSupport) {
                                     val installed = support.installedOnDeviceLanguages.map { it.lowercase() }
+                                    Log.i(TAG, "On-device speech packs: installed=${support.installedOnDeviceLanguages} " +
+                                        "pending=${support.pendingOnDeviceLanguages} supported=${support.supportedOnDeviceLanguages.size}")
                                     if (cont.isActive) cont.resume(language.lowercase() in installed)
                                 }
 
@@ -174,6 +207,41 @@ class AndroidRecognizer(private val context: Context) {
                 sr.destroy()
             }
         }
+    }
+
+    /** Which offline languages each engine reports (for diagnosis). Android 13+. */
+    suspend fun supportReport(): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return "needs Android 13"
+        val out = StringBuilder()
+        for (onDevice in listOf(true, false)) {
+            if (onDevice && !isOnDeviceAvailable()) continue
+            val name = if (onDevice) "Android on-device" else "Google ($googleRecognizer)"
+            val line = withContext(Dispatchers.Main) {
+                val sr = create(onDevice)
+                try {
+                    withTimeoutOrNull(4_000) {
+                        suspendCancellableCoroutine<String> { cont ->
+                            sr.checkRecognitionSupport(
+                                baseIntent(offline = true), context.mainExecutor,
+                                object : android.speech.RecognitionSupportCallback {
+                                    override fun onSupportResult(s: android.speech.RecognitionSupport) {
+                                        if (cont.isActive) cont.resume(
+                                            "installed=${s.installedOnDeviceLanguages} pending=${s.pendingOnDeviceLanguages} " +
+                                                "supported=${s.supportedOnDeviceLanguages.take(12)} online=${s.onlineLanguages.size}",
+                                        )
+                                    }
+                                    override fun onError(error: Int) { if (cont.isActive) cont.resume("error $error") }
+                                },
+                            )
+                        }
+                    } ?: "no answer"
+                } finally {
+                    sr.destroy()
+                }
+            }
+            out.append(name).append(": ").append(line).appendLine()
+        }
+        return out.toString()
     }
 
     /** Asks Android to download the on-device speech pack for [language] (Android 13+). */
@@ -196,6 +264,12 @@ class AndroidRecognizer(private val context: Context) {
     @Volatile private var onlineClips: Boolean? = null
     @Volatile private var packMissingUntil = 0L
 
+    /** Off by default: see [transcribe]. The debug test hook turns it on to try a phone. */
+    var clipsEnabled = false
+
+    /** Pause after each 100 ms piece of a recording (25 = 4x faster than real time). */
+    var feedDelayMs = 25L
+
     /**
      * Writes down an already-recorded sentence (16 kHz mono): used to double-check what the
      * small offline engine thought it heard, with the phone's on-device recognizer (the audio
@@ -205,9 +279,16 @@ class AndroidRecognizer(private val context: Context) {
      */
     suspend fun transcribe(audio: ShortArray, onlineAllowed: Boolean): Result {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || audio.size < 4_000) return Result.Failed(-1)
+        // Tested on the owner's OnePlus (Android 15): Android's on-device service has no languages,
+        // and Google's engines refuse a recording offline (error 13). Only try where it can work.
+        if (!clipsEnabled) return Result.Failed(-1)
         val engines = buildList {
             if (isOnDeviceAvailable() && onDeviceClips != false && SystemClock.elapsedRealtime() > packMissingUntil) add(true)
+            // Google's own engine with its offline pack ("Speech Services by Google"): the pack
+            // the user downloads lives here, not in Android's built-in on-device service
+            if (googleRecognizer != null && onlineClips != false) add(false)
         }
+        var last: Result = Result.Failed(-1)
         for (onDevice in engines) {
             val r = transcribeWith(onDevice, audio)
             // (A missing language pack isn't remembered: it may be downloaded any minute)
@@ -223,9 +304,12 @@ class AndroidRecognizer(private val context: Context) {
                 "Recording re-check (${if (onDevice) "on-device" else "online"}): ${r::class.simpleName}" +
                     if (r is Result.Failed) " ${r.code}" else "",
             )
-            if (r !is Result.Failed) return r
+            // No words from this engine: try the next one (an engine without a speech pack still
+            // "listens" but returns nothing)
+            if (r is Result.Text) return r
+            last = r
         }
-        return Result.Failed(-1)
+        return last
     }
 
     private suspend fun transcribeWith(onDevice: Boolean, audio: ShortArray): Result = withContext(Dispatchers.Main) {
@@ -233,17 +317,33 @@ class AndroidRecognizer(private val context: Context) {
         val sr = create(onDevice)
         val pipe = ParcelFileDescriptor.createPipe()
         try {
-            val intent = baseIntent(offline = onDevice)
+            // Always offline: the recording stays on the phone (Google's engine uses its offline pack)
+            val intent = baseIntent(offline = true)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pipe[0])
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16_000)
-            val bytes = ByteBuffer.allocate(audio.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-                .also { it.asShortBuffer().put(audio) }.array()
-            run(sr, intent, 8_000, onPartial = {}) {
-                // Feed the recording, then close it: the end of the stream ends the sentence
+            // Recording + 0.6 s of silence: the recognizer decides the sentence ended when it hears quiet
+            val padded = audio.copyOf(audio.size + 16_000 * 6 / 10)
+            val bytes = ByteBuffer.allocate(padded.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+                .also { it.asShortBuffer().put(padded) }.array()
+            recognizeOnce(sr, intent, 8_000, onPartial = {}, trace = true) {
+                // Feed it like a microphone would (100 ms pieces), only 4x faster than real time
                 Thread {
-                    runCatching { ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { it.write(bytes) } }
+                    runCatching {
+                        ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { out ->
+                            val piece = 3_200 // 100 ms of 16 kHz 16-bit audio
+                            var i = 0
+                            while (i < bytes.size) {
+                                val n = minOf(piece, bytes.size - i)
+                                out.write(bytes, i, n)
+                                out.flush()
+                                i += n
+                                Thread.sleep(feedDelayMs)
+                            }
+                            Log.i(TAG, "  fed ${bytes.size / 32} ms of audio")
+                        }
+                    }
                 }.start()
             }
         } finally {

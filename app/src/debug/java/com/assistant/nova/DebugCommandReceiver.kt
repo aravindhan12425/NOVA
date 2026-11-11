@@ -22,6 +22,33 @@ import java.io.File
  */
 class DebugCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.getBooleanExtra("support", false)) {
+            val pending = goAsync()
+            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
+                try {
+                    Log.i("NovaDebug", "Speech support: " + AndroidRecognizer(context).supportReport())
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
+        if (intent.getBooleanExtra("live", false)) {
+            val pending = goAsync()
+            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
+                try {
+                    val rec = AndroidRecognizer(context)
+                    intent.getStringExtra("lang")?.let { rec.language = it }
+                    intent.getStringExtra("pkg")?.let { rec.preferredPackage = it }
+                    val t = android.os.SystemClock.elapsedRealtime()
+                    val r = rec.listen(offline = true) {}
+                    Log.i("NovaDebug", "Live offline (${rec.language}): $r after ${android.os.SystemClock.elapsedRealtime() - t} ms")
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
         intent.getStringExtra("wav")?.let { name ->
             val pending = goAsync()
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
@@ -33,6 +60,10 @@ class DebugCommandReceiver : BroadcastReceiver() {
                     }
                     val rec = AndroidRecognizer(context)
                     intent.getStringExtra("lang")?.let { rec.language = it }
+                    intent.getStringExtra("pkg")?.let { rec.preferredPackage = it }
+                    rec.clipsEnabled = true
+                    if (intent.hasExtra("pace")) rec.feedDelayMs = intent.getIntExtra("pace", 25).toLong()
+                    Log.i("NovaDebug", "Pack for ${rec.language}: ${rec.hasOnDevicePack()}")
                     val r = rec.transcribe(pcm, onlineAllowed = intent.getBooleanExtra("online", true))
                     Log.i("NovaDebug", "Transcribed $name: $r")
                 } catch (e: Exception) {

@@ -104,7 +104,8 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
     var speechPackMissing by remember { mutableStateOf(false) }
     var resumes by remember { mutableIntStateOf(0) }
     LaunchedEffect(resumes) {
-        speechPackMissing = runCatching { AndroidRecognizer(context).hasOnDevicePack() }.getOrNull() == false
+        // Known only after Nova has tried it once ("Hey Jarvis …")
+        speechPackMissing = AndroidRecognizer(context).offlinePackOk == false
     }
 
     LifecycleResumeEffect(Unit) {
@@ -333,15 +334,19 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
             item(key = "speechpack") {
                 LinkCard(
                     "Hear me better without “Hey Jarvis”",
-                    "Tap to download Google's English (India) speech pack for this phone (one time). Then Nova " +
-                        "double-checks what it heard, and the words stay on the phone.",
+                    "Download Google's offline English (India) speech pack: Nova then hears you accurately " +
+                        "even without internet, and your words stay on the phone. Tap for the settings.",
                     onClick = {
-                        val started = AndroidRecognizer(context).downloadOnDevicePack()
                         Toast.makeText(
                             context,
-                            if (started) "Download started. It can take a few minutes." else "Couldn't start the download on this phone.",
+                            "Open Speech Services by Google → Offline speech recognition → English (India)",
                             Toast.LENGTH_LONG,
                         ).show()
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
                     },
                 ) { Icon(Icons.Default.Warning, contentDescription = null, tint = Warn) }
             }

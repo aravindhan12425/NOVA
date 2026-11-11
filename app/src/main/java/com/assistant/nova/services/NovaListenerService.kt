@@ -852,8 +852,8 @@ class NovaListenerService : Service() {
         val focus = requestFocus()
         try {
             val heardRaw = typed ?: when (mode) {
-                // Follow-on uses the silent offline recognizer: no beep, no Google sound every few seconds
-                Mode.FOLLOW_ON -> listenOffline(silenceStartMs = windowMs)
+                // Follow-on: no beep. Google's offline pack when it works (accurate), else the small engine
+                Mode.FOLLOW_ON -> listenFollowOn(windowMs)
                 else -> {
                     beep(); recognize()
                 }
@@ -1083,10 +1083,17 @@ class NovaListenerService : Service() {
             (!online && !recognizer.isOnDeviceAvailable())
         if (offlineOnly) return listenOffline()
 
-        NovaState.engine.value = if (online) "Phone recognizer (online)" else "Phone recognizer (offline)"
         lastHeardOffline = false
         mic.close() // the phone's recognizer needs the microphone to itself
-        return when (val r = recognizer.listen(offline = !online) { NovaState.partial.value = safeText(it) }) {
+        // Google's offline pack when it's there: quicker than going online and nothing leaves the phone
+        val packFirst = recognizer.offlinePackOk != false || !online
+        NovaState.engine.value = if (packFirst) "Phone recognizer (offline pack)" else "Phone recognizer (online)"
+        var result = recognizer.listen(offline = packFirst) { NovaState.partial.value = safeText(it) }
+        if (packFirst && online && result is AndroidRecognizer.Result.Failed) {
+            NovaState.engine.value = "Phone recognizer (online)"
+            result = recognizer.listen(offline = false) { NovaState.partial.value = safeText(it) }
+        }
+        return when (val r = result) {
             is AndroidRecognizer.Result.Text -> {
                 phoneRecognizerMisses = 0
                 val best = bestGuess(r.alternatives) ?: r.text
@@ -1109,6 +1116,25 @@ class NovaListenerService : Service() {
                 beep()
                 listenOffline()
             }
+        }
+    }
+
+    /**
+     * The 15 s after a command, no wake word. Uses Google's offline speech pack when it works:
+     * the small offline engine misheard too much ("turn off … bluetooth" -> "turn off").
+     */
+    private suspend fun listenFollowOn(windowMs: Long): String? {
+        val pinMayBeSpoken = prefs.voiceUnlock && isLocked
+        if (recognizer.offlinePackOk != true || onCall || pinMayBeSpoken || prefs.engine == NovaPrefs.ENGINE_OFFLINE) {
+            return listenOffline(silenceStartMs = windowMs)
+        }
+        NovaState.engine.value = "Phone recognizer (offline pack)"
+        lastHeardOffline = false
+        mic.close()
+        return when (val r = recognizer.listen(offline = true) { NovaState.partial.value = safeText(it) }) {
+            is AndroidRecognizer.Result.Text -> bestGuess(r.alternatives) ?: r.text
+            AndroidRecognizer.Result.NoSpeech -> null
+            is AndroidRecognizer.Result.Failed -> listenOffline(silenceStartMs = windowMs)
         }
     }
 
