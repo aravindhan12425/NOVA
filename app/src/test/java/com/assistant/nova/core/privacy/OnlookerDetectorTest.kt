@@ -61,6 +61,12 @@ class OnlookerDetectorTest {
         assertEquals(1, run(d, listOf(owner, stranger()), 32_000, start = 30_400))
     }
 
+    @Test fun `the owner's face detected twice is not a second person`() {
+        val d = OnlookerDetector()
+        val inside = SeenFace(7, 200f, 250f, 280f, 330f, yaw = 2f, pitch = 3f, leftEyeOpen = 0.9f, rightEyeOpen = 0.9f)
+        assertEquals(0, run(d, listOf(owner, inside), 10_000))
+    }
+
     @Test fun `looking away resets the timer`() {
         val d = OnlookerDetector()
         assertFalse(d.update(listOf(owner, stranger()), w, 0))

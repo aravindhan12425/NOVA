@@ -274,7 +274,17 @@ class PrivacyGuardService : LifecycleService() {
                 }
                 frames++
                 if (seen.size > mostFaces) mostFaces = seen.size
-                if (onlookers.update(seen, width, SystemClock.elapsedRealtime())) warn(seen.size)
+                if (onlookers.update(seen, width, SystemClock.elapsedRealtime())) {
+                    // What exactly was seen, so a false warning (a poster, a TV) can be explained
+                    val owner = seen.maxByOrNull { it.width }
+                    fun d(f: SeenFace) = "%d%% wide at (%d%%,%d%%) turned %.0f° / %.0f° eyes %s".format(
+                        (f.width * 100 / width).toInt(), (f.centerX * 100 / width).toInt(),
+                        (f.centerY * 100 / (if (rotation == 90 || rotation == 270) proxy.width else proxy.height)).toInt(),
+                        f.yaw, f.pitch, listOfNotNull(f.leftEyeOpen, f.rightEyeOpen).joinToString("/") { "%.1f".format(it) },
+                    )
+                    Log.i(TAG, "You: ${owner?.let(::d)}; others: ${onlookers.onlookers(seen, width).joinToString("; ") { d(it) }}")
+                    warn(seen.size)
+                }
             }
             .addOnCompleteListener { proxy.close() }
     }

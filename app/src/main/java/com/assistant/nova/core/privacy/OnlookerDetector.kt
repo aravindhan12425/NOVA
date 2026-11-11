@@ -20,6 +20,18 @@ data class SeenFace(
     val rightEyeOpen: Float? = null,
 ) {
     val width: Float get() = right - left
+    val centerX: Float get() = (left + right) / 2
+    val centerY: Float get() = (top + bottom) / 2
+
+    /** True when [other]'s middle is inside this face, or the two boxes overlap a lot. */
+    fun overlaps(other: SeenFace): Boolean {
+        if (other.centerX in left..right && other.centerY in top..bottom) return true
+        val ix = maxOf(0f, minOf(right, other.right) - maxOf(left, other.left))
+        val iy = maxOf(0f, minOf(bottom, other.bottom) - maxOf(top, other.top))
+        val inter = ix * iy
+        val union = width * (bottom - top) + other.width * (other.bottom - other.top) - inter
+        return union > 0 && inter / union > 0.1f
+    }
 }
 
 /**
@@ -65,6 +77,8 @@ class OnlookerDetector(
         var alert = false
         for (f in faces) {
             if (f === owner) continue
+            // A second box on (or inside) the owner's face is the owner detected twice, not a person
+            if (owner != null && owner.overlaps(f)) continue
             val id = f.id ?: continue // can't tell if it's the same person over time
             if (!isLooking(f, frameWidth)) continue
             lastLooking[id] = now
@@ -88,6 +102,12 @@ class OnlookerDetector(
         }
         alertedAt.entries.removeAll { now - it.value > max(repeatMs, cooldownMs) * 2 }
         return alert
+    }
+
+    /** The faces that would count as "someone else looking" in this frame (for the log). */
+    fun onlookers(faces: List<SeenFace>, frameWidth: Int): List<SeenFace> {
+        val owner = faces.maxByOrNull { it.width }
+        return faces.filter { it !== owner && !(owner?.overlaps(it) ?: false) && isLooking(it, frameWidth) }
     }
 
     fun reset() {
