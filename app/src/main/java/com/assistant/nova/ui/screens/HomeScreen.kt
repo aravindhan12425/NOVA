@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Badge
@@ -75,7 +76,13 @@ import com.assistant.nova.ui.theme.TextSecondary
 import com.assistant.nova.ui.theme.Warn
 
 @Composable
-fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities: () -> Unit, onRoutines: () -> Unit) {
+fun HomeScreen(
+    onDeviceCheck: () -> Unit,
+    onSettings: () -> Unit,
+    onCapabilities: () -> Unit,
+    onRoutines: () -> Unit,
+    onUnknownCalls: () -> Unit = {},
+) {
     val context = LocalContext.current
     val prefs = remember { NovaPrefs(context) }
     val status by NovaState.status.collectAsStateWithLifecycle()
@@ -354,6 +361,11 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
         item(key = "capabilities") {
             LinkCard("What Nova can do", "Every feature, with examples you can try", onCapabilities) {
                 Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = NeonBlue)
+            }
+        }
+        item(key = "unknown") {
+            LinkCard("Unknown callers", "Numbers you talked to that aren't contacts: find, call, name or save them", onUnknownCalls) {
+                Icon(Icons.Default.Call, contentDescription = null, tint = NeonBlue)
             }
         }
         item(key = "routines") {

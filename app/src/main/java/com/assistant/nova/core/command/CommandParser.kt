@@ -151,6 +151,12 @@ object CommandParser {
         return sb.toString().ifEmpty { null }
     }
 
+    /** "show unknown calls", "unknown numbers", "who called me from unknown numbers" */
+    private val UNKNOWN_CALLS = Regex(
+        "^(?:show|open|list|see|find|check)?(?: me)?(?: my| the| all)? ?(?:unknown|unsaved|new|strange|random) " +
+            "(?:calls|callers|numbers|number|call list|phone numbers)(?: list| page)?$",
+    )
+
     // ── Small talk ──────────────────────────────────────────────────────────
 
     private val CHAT: List<Pair<Regex, String>> = listOf(
@@ -179,6 +185,7 @@ object CommandParser {
         ) return Command.Help
 
         if (IDENTIFY_RES.any { it.matches(b) }) return Command.IdentifySong
+        if (UNKNOWN_CALLS.containsMatchIn(b)) return Command.ShowUnknownCalls
         parseCallAssistantSwitch(b)?.let { return it }
         parseHandsFreeSwitch(b)?.let { return it }
         parseCamera(b)?.let { return it }

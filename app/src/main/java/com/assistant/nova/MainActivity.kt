@@ -13,6 +13,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
@@ -36,6 +37,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** Set by the "Tap to start listening" notification. */
         const val EXTRA_START_LISTENING = "start_listening"
+        /** Open one of Nova's pages, e.g. "unknown" (from "show unknown calls"). */
+        const val EXTRA_OPEN = "open_page"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,6 +48,10 @@ class MainActivity : ComponentActivity() {
             NovaAITheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val nav = rememberNavController()
+                    val open by openPage
+                    androidx.compose.runtime.LaunchedEffect(open) {
+                        open?.let { nav.navigate(it) { launchSingleTop = true }; openPage.value = null }
+                    }
                     // Gentle slide + fade between screens
                     NavHost(
                         navController = nav,
@@ -60,6 +67,7 @@ class MainActivity : ComponentActivity() {
                                 onSettings = { nav.navigate("settings") },
                                 onCapabilities = { nav.navigate("capabilities") },
                                 onRoutines = { nav.navigate("routines") },
+                                onUnknownCalls = { nav.navigate("unknown") },
                             )
                         }
                         composable("routines") { RoutinesScreen(onBack = { nav.popBackStack() }) }
@@ -69,6 +77,7 @@ class MainActivity : ComponentActivity() {
                                 onDeviceCheck = { nav.navigate("device") },
                             )
                         }
+                        composable("unknown") { com.assistant.nova.ui.screens.UnknownCallsScreen(onBack = { nav.popBackStack() }) }
                         composable("device") { DeviceCheckScreen(onBack = { nav.popBackStack() }) }
                         composable("settings") {
                             SettingsScreen(onBack = { nav.popBackStack() }, onVoiceId = { nav.navigate("voiceid") })
@@ -103,7 +112,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val openPage = androidx.compose.runtime.mutableStateOf<String?>(null)
+
     private fun handleIntent(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_OPEN)?.let { openPage.value = it; intent.removeExtra(EXTRA_OPEN) }
         if (intent?.getBooleanExtra(EXTRA_START_LISTENING, false) != true) return
         intent.removeExtra(EXTRA_START_LISTENING)
         NovaPrefs(this).alwaysOn = true

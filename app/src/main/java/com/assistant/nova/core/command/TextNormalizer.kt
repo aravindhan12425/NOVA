@@ -96,6 +96,8 @@ object TextNormalizer {
                 }
             }
         }
+        // The offline engine often hears "turn on" as "run on"
+        s = s.replace(Regex("^(?:run|ton|tan) (on|off) "), "turn $1 ")
         val first = s.substringBefore(' ')
         gerunds[first]?.let { s = it + s.removePrefix(first) }
         return s

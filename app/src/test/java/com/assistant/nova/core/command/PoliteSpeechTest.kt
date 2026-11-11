@@ -55,6 +55,15 @@ class PoliteSpeechTest {
         assertEquals(Command.Call("thatha"), p("call thatha"))
     }
 
+    @Test fun `misheard turn and the unknown-calls page`() {
+        assertEquals(Command.SetFeature(Feature.FLASHLIGHT, OnOff.ON), p("run on the flashlight"))
+        assertEquals(Command.SetFeature(Feature.FLASHLIGHT, OnOff.OFF), p("run off the flashlight"))
+        for (s in listOf("show unknown calls", "show me unknown numbers", "unknown numbers", "open unknown callers", "show my unsaved numbers")) {
+            assertEquals(s, Command.ShowUnknownCalls, p(s))
+        }
+        assertEquals(Command.Call("repair shop"), p("call the repair shop"))
+    }
+
     @Test fun `small talk`() {
         assertEquals(Command.Chat("You're welcome!"), p("thank you nova"))
         assertEquals(Command.Chat("You're welcome!"), p("thanks"))

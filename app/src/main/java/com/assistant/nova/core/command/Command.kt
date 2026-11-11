@@ -143,6 +143,9 @@ sealed interface Command {
 
     data object Help : Command
 
+    /** Open the page of numbers from the call history that aren't contacts. */
+    data object ShowUnknownCalls : Command
+
     /** Small talk ("thank you", "good morning", "how are you"): Nova just answers with [reply]. */
     data class Chat(val reply: String) : Command
 

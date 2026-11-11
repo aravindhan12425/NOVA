@@ -175,6 +175,14 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         is Command.Brightness -> brightness(cmd)
         is Command.Media -> if (cmd.action == MediaAction.PLAY) playOrShuffle() else media(cmd.action)
         is Command.Chat -> Reply(cmd.reply)
+        Command.ShowUnknownCalls -> {
+            val opened = launch(
+                Intent(context, com.assistant.nova.MainActivity::class.java)
+                    .putExtra(com.assistant.nova.MainActivity.EXTRA_OPEN, "unknown")
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+            if (opened) ok("Here are the numbers that aren't in your contacts.") else Reply("I couldn't open the list.")
+        }
         is Command.Alarm -> alarm(cmd.hour, cmd.minute, cmd.label)
         is Command.AlarmIn -> alarmIn(cmd.seconds, cmd.label)
         is Command.Timer -> timer(cmd.seconds)
@@ -237,11 +245,17 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
             number = who
             label = who.toList().joinToString(" ")
         } else {
-            if (!contacts.hasPermission()) return needContacts()
-            val match = withContext(Dispatchers.IO) { contacts.find(who) }
-                ?: return Reply("I couldn't find $who in your contacts.")
-            number = match.item.number
-            label = match.label
+            val named = com.assistant.nova.core.calls.NumberLabels(context).find(who)
+            if (named != null) {
+                number = named.first
+                label = named.second
+            } else {
+                if (!contacts.hasPermission()) return needContacts()
+                val match = withContext(Dispatchers.IO) { contacts.find(who) }
+                    ?: return Reply("I couldn't find $who in your contacts.")
+                number = match.item.number
+                label = match.label
+            }
         }
         val direct = granted(Manifest.permission.CALL_PHONE)
         val intent = Intent(if (direct) Intent.ACTION_CALL else Intent.ACTION_DIAL, Uri.fromParts("tel", number, null))
