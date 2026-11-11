@@ -907,6 +907,11 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
             "stoprecording", "recording", "unmute", "unhold", "resume" -> true
             "startrecording" -> false
             else -> null
+        } ?: when (a) {
+            // The button doesn't say: Android knows whether the call is on the loudspeaker / muted
+            InCallAction.SPEAKER_ON, InCallAction.SPEAKER_OFF -> speakerOn()
+            InCallAction.MUTE, InCallAction.UNMUTE -> audio.isMicrophoneMute
+            else -> null
         }
         val done = when (a) {
             InCallAction.RECORD_START -> "Recording the call."
@@ -936,6 +941,14 @@ class ActionExecutor(private val context: Context, private val player: NovaPlaye
         }
         return if (svc.clickByLabel(listOf(button.label))) ok(done) else Reply("I couldn't press the $name button.")
     }
+
+    @Suppress("DEPRECATION")
+    private fun speakerOn(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audio.communicationDevice?.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER || audio.isSpeakerphoneOn
+        } else {
+            audio.isSpeakerphoneOn
+        }
 
     // ── Routines ────────────────────────────────────────────────────────────
 

@@ -31,9 +31,11 @@ import com.assistant.nova.core.UsageTracker
 import com.assistant.nova.core.action.CallAssistant
 import com.assistant.nova.core.command.CallAnswer
 import com.assistant.nova.core.command.CallPhrases
+import com.assistant.nova.core.command.RingPhrases
 import com.assistant.nova.core.command.HandsFreePhrases
 import com.assistant.nova.core.command.InCallAction
 import com.assistant.nova.core.command.MediaAction
+import com.assistant.nova.core.command.OnOff
 import com.assistant.nova.core.command.TextNormalizer
 import com.assistant.nova.core.voiceid.VoiceId
 import org.vosk.Recognizer
@@ -668,6 +670,8 @@ class NovaListenerService : Service() {
             words < 2 && !(music && musicOnly) && commands.none { it is Command.RunRoutine } -> "one word"
             // "stop" is fine while music plays: it pauses the music
             music && commands.all { it is Command.Cancel } -> null
+            // "the data", "wifi": without a clear on/off, a misheard word must not flip a switch
+            commands.any { it is Command.SetFeature && it.state == OnOff.TOGGLE } -> "no on or off said"
             // Small talk ("thank you") may be meant for someone else; unlocking needs the wake word
             commands.any { it is Command.Unknown || it is Command.Unlock || it is Command.Cancel || it is Command.Chat } ->
                 "not a command"
@@ -948,6 +952,11 @@ class NovaListenerService : Service() {
                 Log.i(TAG, "($mode) lone “play” ignored")
                 return false
             }
+            if (quiet && commands.any { it is Command.SetFeature && it.state == OnOff.TOGGLE }) {
+                // A switch flipped by a misheard word turned mobile data off once: needs "on" or "off"
+                Log.i(TAG, "($mode) switch without on/off ignored")
+                return false
+            }
             if (mode == Mode.FOLLOW_ON) usage.countCommand()
             // During a call only call commands are allowed: the other person might be on speaker
             if (onCall && commands.any { !CommandParser.allowedDuringCall(it) }) {
@@ -1086,8 +1095,11 @@ class NovaListenerService : Service() {
                 if (!ringing) return
                 show(Status.HEARING, "Answer or reject?")
                 beep()
-                val heard = recognize()
+                // Only answer / reject / silence: starts at once and works over the ringtone
+                // (open listening heard nothing for 12 s on a real call). Free text as a last try.
+                val heard = listenWhileRinging(20_000) ?: if (attempt == 1 && ringing) recognize() else null
                 if (!ringing) return
+                val wantsText = heard != null && heard in RingPhrases.REJECT_AND_SEND
                 val parsed = heard?.let { CallAnswer.parse(it) }
                 Log.i(TAG, if (verboseLogs) "During ringing heard “$heard” -> $parsed" else "During ringing -> ${parsed?.let { it::class.simpleName }}")
                 when (val a = parsed) {
@@ -1098,7 +1110,15 @@ class NovaListenerService : Service() {
                     }
                     is CallAnswer.Reject -> {
                         val ok = calls.reject() || NovaAccessibilityService.instance?.clickByLabel(listOf("decline", "reject")) == true
-                        val texted = a.message?.let { msg ->
+                        // "reject and send": ask what to send now that the ringing has stopped
+                        val message = a.message ?: if (wantsText) {
+                            speaker.speak("What should I send?")
+                            beep()
+                            recognize()?.trim()?.takeIf { it.isNotEmpty() }
+                        } else {
+                            null
+                        }
+                        val texted = message?.let { msg ->
                             var to = number
                             // Number not passed while ringing? The rejected call is in the call log a moment later
                             repeat(8) { if (to == null) { delay(250); to = calls.lastCallNumber() } }
@@ -1106,7 +1126,7 @@ class NovaListenerService : Service() {
                         } ?: false
                         NovaState.addExchange(heard.orEmpty(), buildString {
                             append(if (ok) "Rejected" else "Couldn't reject")
-                            if (a.message != null) append(if (texted) " and texted “${a.message}”" else " (couldn't send the text)")
+                            if (message != null) append(if (texted) " and texted “$message”" else " (couldn't send the text)")
                         })
                         return
                     }
@@ -1120,6 +1140,28 @@ class NovaListenerService : Service() {
         } finally {
             if (lowered && ringing) runCatching { audioManager.setStreamVolume(AudioManager.STREAM_RING, ringBefore, 0) }
             inCommand = false
+        }
+    }
+
+    /** While the phone rings: the first answer / reject / silence phrase heard (offline), or null. */
+    private suspend fun listenWhileRinging(timeoutMs: Long): String? = withContext(Dispatchers.Default) {
+        if (!mic.open()) return@withContext null
+        val rec = runCatching { vosk.newGrammarRecognizer(RingPhrases.grammarJson()) }.getOrNull() ?: return@withContext null
+        try {
+            val buf = ShortArray(1600)
+            val end = SystemClock.elapsedRealtime() + timeoutMs
+            while (currentCoroutineContext().isActive && ringing && SystemClock.elapsedRealtime() < end) {
+                val n = mic.read(buf)
+                if (n <= 0) break
+                if (rec.acceptWaveForm(buf, n)) {
+                    val heard = vosk.text(rec.result)
+                    RingPhrases.accept(heard)?.let { return@withContext it }
+                    if (verboseLogs && heard.isNotBlank()) Log.i(TAG, "Ringing, not an answer: “$heard”")
+                }
+            }
+            RingPhrases.accept(vosk.text(rec.finalResult))
+        } finally {
+            rec.close()
         }
     }
 

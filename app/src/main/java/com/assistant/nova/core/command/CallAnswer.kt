@@ -63,7 +63,8 @@ sealed interface CallAnswer {
                 ANSWER.matches(b) -> Answer
                 REJECT.matches(b) -> Reject(null)
                 SILENCE.matches(b) -> Silence
-                b.startsWith("answer") || b.startsWith("pick up") || b.startsWith("accept") -> Answer
+                b.startsWith("answer") || b.startsWith("pick up") || b.startsWith("pick it up") || b.startsWith("accept") ||
+                    b.startsWith("attend") || b.startsWith("receive") || b == "take the call" -> Answer
                 b.startsWith("reject") || b.startsWith("decline") || b.startsWith("cut") -> Reject(null)
                 else -> null
             }
