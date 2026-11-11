@@ -108,6 +108,11 @@ class NovaPrefs(context: Context) {
         get() = p.getString("direct_when", DIRECT_SCREEN_ON) ?: DIRECT_SCREEN_ON
         set(v) = p.edit().putString("direct_when", v).apply()
 
+    /** Privacy guard: warn when someone else looks at the screen (front camera, on the phone only). */
+    var privacyGuard: Boolean
+        get() = p.getBoolean("privacy_guard", false)
+        set(v) = p.edit().putBoolean("privacy_guard", v).apply()
+
     /** Voice unlock also requires the user's voice (when a voice profile exists). */
     var unlockNeedsVoiceId: Boolean
         get() = p.getBoolean("unlock_voice_id", true)

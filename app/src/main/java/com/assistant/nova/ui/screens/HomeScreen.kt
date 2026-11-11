@@ -67,6 +67,7 @@ import com.assistant.nova.core.NovaState
 import com.assistant.nova.core.NovaState.Status
 import com.assistant.nova.core.device.DeviceProfile
 import com.assistant.nova.services.NovaListenerService
+import com.assistant.nova.services.PrivacyGuardService
 import com.assistant.nova.ui.components.NovaOrb
 import com.assistant.nova.ui.theme.NeonBlue
 import com.assistant.nova.ui.theme.SurfaceColor
@@ -88,6 +89,15 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
     val capacity = remember { UsageTracker.batteryCapacityMah(context) }
 
     var callAssistant by remember { mutableStateOf(prefs.callAssistant) }
+    var privacyGuard by remember { mutableStateOf(prefs.privacyGuard && PrivacyGuardService.isRunning) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            prefs.privacyGuard = true
+            privacyGuard = PrivacyGuardService.start(context)
+        } else {
+            Toast.makeText(context, "The privacy guard needs the camera.", Toast.LENGTH_LONG).show()
+        }
+    }
     var handsFree by remember { mutableStateOf(prefs.directMode) }
     var voiceEnrolled by remember { mutableStateOf(VoiceId(context).isEnrolled) }
     // Google's on-device speech pack: lets Nova re-check what the small offline engine heard
@@ -103,6 +113,7 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
         missing = DeviceProfile.missingRequired(context)
         alwaysOn = prefs.alwaysOn
         callAssistant = prefs.callAssistant
+        privacyGuard = prefs.privacyGuard
         usage = UsageTracker.today(context)
         resumes++
         onPauseOrDispose {}
@@ -250,6 +261,31 @@ fun HomeScreen(onDeviceCheck: () -> Unit, onSettings: () -> Unit, onCapabilities
                 subtitle = if (callAssistant) "Announces callers; during a call just say “end the call”" else "Off: calls ring normally",
                 checked = callAssistant,
                 onChange = { callAssistant = it; prefs.callAssistant = it },
+            )
+        }
+
+        // Privacy guard: front camera watches for someone else reading the screen
+        item(key = "privacy") {
+            SwitchCard(
+                title = "Privacy guard",
+                subtitle = if (privacyGuard) {
+                    "On: warns you and darkens the screen if someone else looks at it. Uses more battery."
+                } else {
+                    "Off: turn on in crowded places (front camera, nothing is recorded)"
+                },
+                checked = privacyGuard,
+                onChange = { on ->
+                    if (!on) {
+                        prefs.privacyGuard = false
+                        privacyGuard = false
+                        PrivacyGuardService.stop(context)
+                    } else if (DeviceProfile.granted(context, Manifest.permission.CAMERA)) {
+                        prefs.privacyGuard = true
+                        privacyGuard = PrivacyGuardService.start(context)
+                    } else {
+                        cameraLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                },
             )
         }
 

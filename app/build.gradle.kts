@@ -74,6 +74,12 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 
+    // Privacy guard: front camera + Google's offline face detector (bundled, works without internet)
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("com.google.mlkit:face-detection:16.1.7")
+
     testImplementation("junit:junit:4.13.2")
     // Desktop build of ONNX Runtime so the wake-word engine can be unit tested on the PC
     testImplementation("com.microsoft.onnxruntime:onnxruntime:1.19.2")

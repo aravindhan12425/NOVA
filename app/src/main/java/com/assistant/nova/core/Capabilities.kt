@@ -326,6 +326,15 @@ object Capabilities {
                         "Music, calls, switches, info and meanings all work without unlocking.",
                     ex("Hey Jarvis, pause", "Hey Jarvis, call mom", "Hey Jarvis, what's the time"),
                 ),
+                Capability(
+                    "Privacy guard",
+                    "Turn it on from the Home screen in crowded places. While your screen is on, the front camera watches " +
+                        "for someone else facing your phone for over a second (people just passing by, looking elsewhere " +
+                        "or far away are ignored). Nova vibrates, shows a message and darkens the screen until you tap it. " +
+                        "Faces are checked on the phone; nothing is recorded or sent. Uses more battery while on.",
+                    emptyList(),
+                    listOf(Requirement.ACCESSIBILITY),
+                ),
             ),
         ),
     )

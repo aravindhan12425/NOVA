@@ -87,6 +87,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Android won't start a camera service by itself after a reboot: restart the privacy guard here
+        val prefs = NovaPrefs(this)
+        if (prefs.privacyGuard && !com.assistant.nova.services.PrivacyGuardService.isRunning &&
+            DeviceProfile.granted(this, Manifest.permission.CAMERA)
+        ) {
+            com.assistant.nova.services.PrivacyGuardService.start(this)
+        }
         // Nova is on screen, so Android allows starting the microphone now: resume 24/7 listening
         // if it was stopped (reboot, app update, killed by the system).
         if (NovaPrefs(this).alwaysOn && !NovaListenerService.isRunning &&

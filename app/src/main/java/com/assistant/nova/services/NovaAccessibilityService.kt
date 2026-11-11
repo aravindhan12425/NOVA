@@ -679,6 +679,49 @@ class NovaAccessibilityService : AccessibilityService() {
         return false
     }
 
+    // ── Privacy cover ───────────────────────────────────────────────────────
+
+    private var curtain: android.view.View? = null
+
+    /**
+     * Covers the whole screen with a dark layer (privacy guard: someone else is looking).
+     * A tap anywhere removes it. Drawn as an accessibility overlay, so no extra permission.
+     */
+    fun showPrivacyCurtain() {
+        android.os.Handler(mainLooper).post {
+            if (curtain != null) return@post
+            val wm = getSystemService(android.view.WindowManager::class.java)
+            val text = android.widget.TextView(this).apply {
+                text = "Someone may be looking at your screen.\n\nTap to show it again."
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 18f
+                gravity = android.view.Gravity.CENTER
+            }
+            val view = android.widget.FrameLayout(this).apply {
+                setBackgroundColor(0xF5000000.toInt())
+                addView(text, android.widget.FrameLayout.LayoutParams(-1, -1))
+                setOnClickListener { hidePrivacyCurtain() }
+            }
+            val lp = android.view.WindowManager.LayoutParams(
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                android.graphics.PixelFormat.TRANSLUCENT,
+            )
+            runCatching { wm.addView(view, lp); curtain = view }
+                .onFailure { Log.w(tag, "Couldn't show the privacy cover", it) }
+        }
+    }
+
+    fun hidePrivacyCurtain() {
+        android.os.Handler(mainLooper).post {
+            curtain?.let { v -> runCatching { getSystemService(android.view.WindowManager::class.java).removeView(v) } }
+            curtain = null
+        }
+    }
+
     // ── Spotify ─────────────────────────────────────────────────────────────
     // On Spotify Free, "play from search" and the Liked Songs link only OPEN the page, and the
     // big green Play button has no label. So Nova taps the first search result, then the
