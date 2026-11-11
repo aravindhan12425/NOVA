@@ -37,9 +37,12 @@ object CallPhrases {
 
     private val phraseSet = PHRASES.toSet()
 
+    /** Heard -> meant: Indian-English "end" is often heard as "and". Listened for too. */
+    private val ALIASES = mapOf("and the call" to "end the call", "and call" to "end call", "and this call" to "end this call")
+
     /** The phrase list for Vosk's recognizer, as a JSON array (plus "[unk]" for everything else). */
     fun grammarJson(): String =
-        (PHRASES + WAKE + "[unk]").joinToString(",", "[", "]") { "\"$it\"" }
+        (PHRASES + ALIASES.keys + WAKE + "[unk]").joinToString(",", "[", "]") { "\"$it\"" }
 
     /**
      * Decides whether something heard during a call is a call command. Returns the
@@ -59,6 +62,7 @@ object CallPhrases {
         if (words.isEmpty() || "[unk]" in words || unknownBefore > 2) return null
         var text = words.joinToString(" ")
         WAKE.firstOrNull { text.startsWith("$it ") }?.let { text = text.removePrefix("$it ") }
+        ALIASES[text]?.let { return it }
         if (text in phraseSet) {
             if (unknownBefore > 0 && !text.contains(' ')) return null
             return text

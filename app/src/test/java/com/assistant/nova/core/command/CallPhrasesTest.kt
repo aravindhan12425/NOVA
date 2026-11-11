@@ -31,6 +31,8 @@ class CallPhrasesTest {
         assertEquals(InCallAction.RECORD_START, (CommandParser.parse("turn on the call recording") as Command.CallControl).action)
         assertEquals(InCallAction.RECORD_STOP, (CommandParser.parse("turn off the call recording") as Command.CallControl).action)
         assertEquals("finish the call", CallPhrases.accept("finish the call"))
+        assertEquals("end the call", CallPhrases.accept("and the call"))
+        assertEquals("cut the call", CallPhrases.accept("cut the call")) // "cut" + "the call" joined
         // Single words stay ignored: they're too easy to say while talking
         assertNull(CallPhrases.accept("recording"))
         assertNull(CallPhrases.accept("finish"))

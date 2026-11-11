@@ -729,14 +729,28 @@ class NovaListenerService : Service() {
      * Anything else said on the call is ignored.
      */
     private inner class CallListener(private val rec: org.vosk.Recognizer) {
+        /** The previous piece heard, kept briefly: "cut" … "the call" often arrive as two pieces. */
+        private var previous = ""
+        private var previousAt = 0L
+
         fun step(buf: ShortArray, n: Int, engine: WakeWordEngine): String? {
             if (!rec.acceptWaveForm(buf, n)) return null
             val heard = vosk.text(rec.result)
-            val phrase = CallPhrases.accept(heard)
+            if (heard.isBlank()) return null
+            val now = SystemClock.elapsedRealtime()
+            val joined = if (previous.isNotEmpty() && now - previousAt < 2_500) {
+                previous + " " + heard.trim().split(' ').dropWhile { it == "[unk]" }.joinToString(" ")
+            } else {
+                null
+            }
+            val phrase = joined?.let { CallPhrases.accept(it) } ?: CallPhrases.accept(heard)
             if (phrase == null) {
-                if (verboseLogs && heard.isNotBlank()) Log.i(TAG, "In call, not a command: “$heard”")
+                if (verboseLogs) Log.i(TAG, "In call, not a command: “$heard”" + (joined?.let { " (with the piece before: “$it”)" } ?: ""))
+                previous = heard.trim().split(' ').filter { it != "[unk]" }.takeLast(3).joinToString(" ")
+                previousAt = now
                 return null
             }
+            previous = ""
             // On speaker the other person's voice reaches the mic too: then it must be the owner's voice
             if (onSpeaker() && voiceId.isEnrolled) {
                 val score = runCatching { voiceId.score(engine.recentAudio(2.5)) }.getOrNull()
