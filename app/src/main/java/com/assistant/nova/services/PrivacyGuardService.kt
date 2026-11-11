@@ -179,9 +179,15 @@ class PrivacyGuardService : LifecycleService() {
             val analysis = builder.build().also { it.setAnalyzer(analyzerThread, ::analyze) }
             try {
                 p.unbindAll()
-                p.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
+                val camera = p.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
+                camera.cameraInfo.cameraState.observe(this) { state ->
+                    state.error?.let { Log.w(TAG, "Camera problem: code ${it.code} (${state.type})") }
+                }
                 onlookers.reset()
+                startedAt = SystemClock.elapsedRealtime()
+                lastFrameAt = 0L
                 Log.i(TAG, "Watching (front camera)")
+                watchdog()
             } catch (e: Exception) {
                 // Another app (video call, camera) has the camera: try again next time the screen turns on
                 Log.w(TAG, "Front camera not available", e)
@@ -190,7 +196,44 @@ class PrivacyGuardService : LifecycleService() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    // ── Keeping the camera working ──────────────────────────────────────────
+
+    @Volatile private var lastFrameAt = 0L
+    @Volatile private var startedAt = 0L
+    @Volatile private var frames = 0
+    @Volatile private var mostFaces = 0
+    private val handler by lazy { android.os.Handler(mainLooper) }
+
+    /**
+     * Pictures should arrive several times a second. If none come for a few seconds (Android can
+     * stop a background app's camera after the screen was off), reconnect it; and every 30 s
+     * note how it's doing, so problems show up in the log.
+     */
+    private fun watchdog() {
+        handler.removeCallbacksAndMessages(null)
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (!cameraOn) return
+                val now = SystemClock.elapsedRealtime()
+                val since = if (lastFrameAt == 0L) now - startedAt else now - lastFrameAt
+                if (since > 4_000) {
+                    Log.w(TAG, "No pictures from the camera for ${since / 1000} s: reconnecting")
+                    cameraOn = false
+                    runCatching { provider?.unbindAll() }
+                    if (screenInUse()) startCamera()
+                    return
+                }
+                if (frames > 0) {
+                    Log.i(TAG, "Checked $frames pictures in the last 30 s (most faces at once: $mostFaces)")
+                    frames = 0; mostFaces = 0
+                }
+                handler.postDelayed(this, 30_000)
+            }
+        }, 5_000)
+    }
+
     private fun stopCamera() {
+        handler.removeCallbacksAndMessages(null)
         if (!cameraOn) return
         cameraOn = false
         runCatching { provider?.unbindAll() }
@@ -215,6 +258,7 @@ class PrivacyGuardService : LifecycleService() {
             proxy.close(); return
         }
         lastChecked = now
+        lastFrameAt = now
         val rotation = proxy.imageInfo.rotationDegrees
         val width = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
         faces.process(InputImage.fromMediaImage(media, rotation))
@@ -228,6 +272,8 @@ class PrivacyGuardService : LifecycleService() {
                         leftEyeOpen = f.leftEyeOpenProbability, rightEyeOpen = f.rightEyeOpenProbability,
                     )
                 }
+                frames++
+                if (seen.size > mostFaces) mostFaces = seen.size
                 if (onlookers.update(seen, width, SystemClock.elapsedRealtime())) warn(seen.size)
             }
             .addOnCompleteListener { proxy.close() }
