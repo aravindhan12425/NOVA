@@ -25,6 +25,18 @@ class CallPhrasesTest {
         assertEquals("disconnect", CallPhrases.accept("disconnect"))
     }
 
+    @Test fun `what was heard on a real call`() {
+        // From the owner's call log: these were ignored before
+        assertEquals("turn on the call recording", CallPhrases.accept("turn on the call recording"))
+        assertEquals(InCallAction.RECORD_START, (CommandParser.parse("turn on the call recording") as Command.CallControl).action)
+        assertEquals(InCallAction.RECORD_STOP, (CommandParser.parse("turn off the call recording") as Command.CallControl).action)
+        assertEquals("finish the call", CallPhrases.accept("finish the call"))
+        // Single words stay ignored: they're too easy to say while talking
+        assertNull(CallPhrases.accept("recording"))
+        assertNull(CallPhrases.accept("finish"))
+        assertNull(CallPhrases.accept("nova"))
+    }
+
     @Test fun `ignored when it is just conversation`() {
         assertNull(CallPhrases.accept(""))
         assertNull(CallPhrases.accept("[unk]"))

@@ -24,7 +24,9 @@ object CallPhrases {
         "turn off my mic", "turn off the mic", "turn on my mic", "turn on the mic",
         // Recording
         "record the call", "record call", "record this call", "start recording", "start call recording",
-        "stop recording", "stop call recording",
+        "turn on call recording", "turn on the call recording", "start the recording",
+        "stop recording", "stop call recording", "stop the recording", "turn off call recording",
+        "turn off the call recording",
         // Hold
         "hold the call", "put the call on hold", "put on hold", "resume the call", "take off hold",
     )
@@ -57,8 +59,13 @@ object CallPhrases {
         if (words.isEmpty() || "[unk]" in words || unknownBefore > 2) return null
         var text = words.joinToString(" ")
         WAKE.firstOrNull { text.startsWith("$it ") }?.let { text = text.removePrefix("$it ") }
-        if (text !in phraseSet) return null
-        if (unknownBefore > 0 && !text.contains(' ')) return null
-        return text
+        if (text in phraseSet) {
+            if (unknownBefore > 0 && !text.contains(' ')) return null
+            return text
+        }
+        // The recognizer can join listed words in a new order ("turn on the call recording"):
+        // fine if it's still clearly a call command of 2+ words
+        if (text.contains(' ') && CommandParser.parse(text) is Command.CallControl) return text
+        return null
     }
 }
