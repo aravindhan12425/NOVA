@@ -31,6 +31,7 @@ import com.assistant.nova.core.UsageTracker
 import com.assistant.nova.core.action.CallAssistant
 import com.assistant.nova.core.command.CallAnswer
 import com.assistant.nova.core.command.CallPhrases
+import com.assistant.nova.core.command.HandsFreePhrases
 import com.assistant.nova.core.command.InCallAction
 import com.assistant.nova.core.command.MediaAction
 import com.assistant.nova.core.command.TextNormalizer
@@ -516,22 +517,46 @@ class NovaListenerService : Service() {
      * nothing), transcribes each one offline, and returns it only if it's a clear command
      * in the owner's voice.
      */
-    private inner class DirectListener(private val rec: Recognizer) {
+    private inner class DirectListener(
+        private val rec: Recognizer,
+        /** Same audio, but only the everyday commands in [HandsFreePhrases]: far fewer mistakes. */
+        private val fixed: Recognizer?,
+    ) {
         private val preroll = ArrayDeque<ShortArray>()
         private val audio = ArrayList<Short>()
         private var speaking = false
         private var quietMs = 0
         private var speechMs = 0
+        private var loudSum = 0.0
         /** Phrases Vosk already finalised inside this sentence (it ends a phrase after ~0.5 s of quiet). */
         private val finished = ArrayList<String>()
+        private val finishedFixed = ArrayList<String>()
+        /** Words seen so far in this sentence (open recognizer), to tell speech from mere noise. */
+        private var heardWords = false
         /** Background loudness (fan, traffic, TV): "quiet" means quiet compared with this. */
         private var noise = 120.0
+        private var noiseSkips = 0
 
-        /** Returns true when Vosk finished a phrase with this chunk. */
+        /** Returns true when the open recognizer finished a phrase with this chunk. */
         private fun feed(c: ShortArray, n: Int): Boolean {
-            if (!rec.acceptWaveForm(c, n)) return false
-            vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished += it }
+            fixed?.let { f -> if (f.acceptWaveForm(c, n)) vosk.text(f.result).takeIf { it.isNotBlank() }?.let { finishedFixed += it } }
+            if (!rec.acceptWaveForm(c, n)) {
+                if (!heardWords && vosk.text(rec.partialResult, "partial").isNotBlank()) heardWords = true
+                return false
+            }
+            vosk.text(rec.result).takeIf { it.isNotBlank() }?.let { finished += it; heardWords = true }
             return true
+        }
+
+        /** The everyday command the fixed-list recognizer heard, if it heard exactly one. */
+        private fun fixedCommand(extra: String = ""): String? =
+            HandsFreePhrases.accept((finishedFixed + extra).filter { it.isNotBlank() }.joinToString(" "), routines.names())
+
+        private fun reset() {
+            speaking = false
+            finished.clear(); finishedFixed.clear()
+            runCatching { rec.reset() }
+            fixed?.let { runCatching { it.reset() } }
         }
 
         fun step(buf: ShortArray, n: Int): String? {
@@ -547,7 +572,8 @@ class NovaListenerService : Service() {
                     noise = noise * 0.95 + rms * 0.05 // learn the room while nobody speaks
                     return null
                 }
-                speaking = true; quietMs = 0; speechMs = 0; audio.clear(); finished.clear()
+                speaking = true; quietMs = 0; speechMs = 0; loudSum = 0.0; heardWords = false
+                audio.clear(); finished.clear(); finishedFixed.clear()
                 for (c in preroll) { feed(c, c.size); c.forEach { audio += it } }
                 preroll.clear()
                 return null
@@ -555,30 +581,39 @@ class NovaListenerService : Service() {
             val phraseDone = feed(chunk, n)
             if (audio.size < 16_000 * 8) chunk.forEach { audio += it }
             speechMs += 80
+            loudSum += rms
             quietMs = if (rms < quietLevel) quietMs + 80 else 0
+            // Loud but no words after 1.5 s: a fan, traffic, a TV in another language… not speech.
+            // Stop here (the engine was running non-stop before) and learn that this is the room's level.
+            if (!heardWords && finished.isEmpty() && speechMs >= 1_500) {
+                noise = noise * 0.6 + (loudSum * 80 / speechMs) * 0.4
+                if (++noiseSkips % 20 == 1) Log.i(TAG, "Direct: just noise, ignoring (room level now %.0f)".format(noise))
+                reset()
+                return null
+            }
             val maxSpeech = if (audioManager.isMusicActive) 3_500 else 5_000
-            // A whole command is already there ("turn on the flashlight"): act now instead of
-            // waiting for silence, which never comes in a noisy room
-            val complete = phraseDone && finished.isNotEmpty() && isWholeCommand(finished.joinToString(" "))
+            // A whole command is already there: act now instead of waiting for silence
+            val complete = (phraseDone && finished.isNotEmpty() && isWholeCommand(finished.joinToString(" "))) ||
+                fixedCommand() != null
             if (!complete && quietMs < 800 && speechMs < maxSpeech) return null
             // Sentence finished
-            speaking = false
-            Log.i(TAG, "Direct: sentence of %.1f s, ended by %s (noise %.0f)".format(
-                speechMs / 1000.0, if (complete) "a whole command" else if (quietMs >= 800) "quiet" else "the time limit", noise,
-            ))
-            // Top guess only: picking "any guess that is a command" would make room chatter trigger Nova.
-            // (Before, only finalResult was read, which is empty when Vosk had already ended the
-            // phrase by itself: then every hands-free command was silently lost.)
+            val endedBy = if (complete) "a whole command" else if (quietMs >= 800) "quiet" else "the time limit"
+            val fixedHeard = fixedCommand(fixed?.let { vosk.text(it.finalResult) }.orEmpty())
             val phrases = (finished + vosk.text(rec.finalResult)).filter { it.isNotBlank() }
-            finished.clear()
-            if (phrases.isEmpty()) return null
-            // The whole thing if it's one command ("turn off … bluetooth"), else the last phrase
-            // that is one ("good night … good morning" -> "good morning")
-            val whole = phrases.joinToString(" ")
-            val text = if (isCommand(whole)) whole else phrases.lastOrNull { isCommand(it) } ?: whole
+            reset()
+            Log.i(TAG, "Direct: sentence of %.1f s, ended by %s".format(speechMs / 1000.0, endedBy))
+            // An everyday command from the fixed list beats the open guess ("plastic" -> "flashlight")
+            val text = fixedHeard ?: run {
+                if (phrases.isEmpty()) return null
+                // The whole thing if it's one command ("turn off … bluetooth"), else the last phrase
+                // that is one ("good night … good morning" -> "good morning")
+                val whole = phrases.joinToString(" ")
+                if (isCommand(whole)) whole else phrases.lastOrNull { isCommand(it) } ?: whole
+            }
+            if (fixedHeard != null && verboseLogs) Log.i(TAG, "Direct: fixed list heard “$fixedHeard” (open: “${phrases.joinToString(" ")}”)")
             val sound = audio.toShortArray()
             if (!isOwnersCommand(text, sound)) return null
-            NovaState.engine.value = "Vosk (hands-free)"
+            NovaState.engine.value = if (fixedHeard != null) "Vosk (hands-free, command list)" else "Vosk (hands-free)"
             lastHeardOffline = true
             lastUtterance = sound
             return text
@@ -662,6 +697,11 @@ class NovaListenerService : Service() {
     /** Reads the mic and runs the wake-word engine until something happens. Runs off the main thread. */
     private suspend fun waitForWake(engine: WakeWordEngine, direct: Boolean = false): Trigger {
         val rec = if (direct) runCatching { vosk.newRecognizer() }.getOrNull() else null
+        val fixedRec = if (rec != null) {
+            runCatching { vosk.newGrammarRecognizer(HandsFreePhrases.grammarJson(routines.names())) }.getOrNull()
+        } else {
+            null
+        }
         val callRec = if (callListening()) {
             runCatching { vosk.newGrammarRecognizer(CallPhrases.grammarJson()) }
                 .onFailure { Log.e(TAG, "Couldn't start listening for call commands", it) }
@@ -670,9 +710,10 @@ class NovaListenerService : Service() {
             null
         }
         try {
-            return waitForWakeLoop(engine, rec?.let { DirectListener(it) }, direct, callRec?.let { CallListener(it) })
+            return waitForWakeLoop(engine, rec?.let { DirectListener(it, fixedRec) }, direct, callRec?.let { CallListener(it) })
         } finally {
             rec?.close()
+            fixedRec?.close()
             callRec?.close()
         }
     }
