@@ -62,7 +62,7 @@ class PrivacyGuardService : LifecycleService() {
         private const val ID = 4201
         private const val ID_ALERT = 4202
         /** Faces are checked this often; the camera itself also runs at its lowest frame rate. */
-        private const val EVERY_MS = 350L
+        private const val EVERY_MS = 250L
 
         @Volatile var isRunning = false
             private set
@@ -202,6 +202,7 @@ class PrivacyGuardService : LifecycleService() {
     @Volatile private var startedAt = 0L
     @Volatile private var frames = 0
     @Volatile private var mostFaces = 0
+    @Volatile private var lastWhyLog = 0L
     private val handler by lazy { android.os.Handler(mainLooper) }
 
     /**
@@ -274,6 +275,15 @@ class PrivacyGuardService : LifecycleService() {
                 }
                 frames++
                 if (seen.size > mostFaces) mostFaces = seen.size
+                // Someone else in view but not counted: note why, at most every 3 s
+                val others = onlookers.others(seen)
+                if (others.isNotEmpty() && now - lastWhyLog > 3_000) {
+                    val why = others.mapNotNull { onlookers.notLookingBecause(it, width) }
+                    if (why.isNotEmpty()) {
+                        lastWhyLog = now
+                        Log.i(TAG, "Another face, not counted: ${why.joinToString("; ")}")
+                    }
+                }
                 if (onlookers.update(seen, width, SystemClock.elapsedRealtime())) {
                     // What exactly was seen, so a false warning (a poster, a TV) can be explained
                     val owner = seen.maxByOrNull { it.width }

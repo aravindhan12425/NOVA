@@ -32,7 +32,19 @@ class OnlookerDetectorTest {
 
     @Test fun `a quick glance is not enough`() {
         val d = OnlookerDetector()
-        assertEquals(0, run(d, listOf(owner, stranger()), 1_000))
+        assertEquals(0, run(d, listOf(owner, stranger()), 800))
+    }
+
+    @Test fun `works without the detector's ids`() {
+        val d = OnlookerDetector()
+        assertEquals(1, run(d, listOf(owner, stranger().copy(id = null)), 3_000))
+    }
+
+    @Test fun `someone right beside the owner still counts`() {
+        val d = OnlookerDetector()
+        // Their face box touches the owner's (heads together), but its middle is outside it
+        val beside = SeenFace(null, 330f, 160f, 450f, 290f, yaw = 10f, pitch = 5f, leftEyeOpen = 0.8f, rightEyeOpen = 0.8f)
+        assertEquals(1, run(d, listOf(owner, beside), 3_000))
     }
 
     @Test fun `the owner alone never triggers`() {
@@ -57,8 +69,8 @@ class OnlookerDetectorTest {
     @Test fun `one alert per person, not a buzz every second`() {
         val d = OnlookerDetector()
         assertEquals(1, run(d, listOf(owner, stranger()), 30_000))
-        // Still looking a minute later: reminded once more
-        assertEquals(1, run(d, listOf(owner, stranger()), 32_000, start = 30_400))
+        // Still looking: reminded every 30 s
+        assertEquals(1, run(d, listOf(owner, stranger()), 29_000, start = 30_400))
     }
 
     @Test fun `the owner's face detected twice is not a second person`() {
@@ -70,10 +82,10 @@ class OnlookerDetectorTest {
     @Test fun `looking away resets the timer`() {
         val d = OnlookerDetector()
         assertFalse(d.update(listOf(owner, stranger()), w, 0))
-        assertFalse(d.update(listOf(owner, stranger()), w, 1_000))
-        assertFalse(d.update(listOf(owner), w, 2_000)) // looked away
-        assertFalse(d.update(listOf(owner, stranger()), w, 2_400))
-        assertFalse(d.update(listOf(owner, stranger()), w, 3_400))
-        assertTrue(d.update(listOf(owner, stranger()), w, 4_000))
+        assertFalse(d.update(listOf(owner, stranger()), w, 600))
+        assertFalse(d.update(listOf(owner), w, 1_600)) // looked away
+        assertFalse(d.update(listOf(owner, stranger()), w, 2_000))
+        assertFalse(d.update(listOf(owner, stranger()), w, 2_600))
+        assertTrue(d.update(listOf(owner, stranger()), w, 3_000))
     }
 }

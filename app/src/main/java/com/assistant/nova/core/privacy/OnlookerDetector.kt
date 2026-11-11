@@ -1,11 +1,12 @@
 package com.assistant.nova.core.privacy
 
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 
 /** One face from the front camera, in the upright image's pixels. */
 data class SeenFace(
-    /** Same number for the same person across frames (null if the detector couldn't track it). */
+    /** The detector's own id for this person (not relied on: see [OnlookerDetector]). */
     val id: Int?,
     val left: Float,
     val top: Float,
@@ -23,15 +24,13 @@ data class SeenFace(
     val centerX: Float get() = (left + right) / 2
     val centerY: Float get() = (top + bottom) / 2
 
-    /** True when [other]'s middle is inside this face, or the two boxes overlap a lot. */
-    fun overlaps(other: SeenFace): Boolean {
-        if (other.centerX in left..right && other.centerY in top..bottom) return true
-        val ix = maxOf(0f, minOf(right, other.right) - maxOf(left, other.left))
-        val iy = maxOf(0f, minOf(bottom, other.bottom) - maxOf(top, other.top))
-        val inter = ix * iy
-        val union = width * (bottom - top) + other.width * (other.bottom - other.top) - inter
-        return union > 0 && inter / union > 0.1f
-    }
+    /**
+     * True when [other] is this face detected a second time: a smaller box whose middle lies
+     * inside this one. (A person peeking over the owner's shoulder sits beside the owner's face,
+     * maybe touching it, but their middle isn't inside it.)
+     */
+    fun contains(other: SeenFace): Boolean =
+        other.width < width * 0.7f && other.centerX in left..right && other.centerY in top..bottom
 }
 
 /**
@@ -40,79 +39,84 @@ data class SeenFace(
  * - The owner holds the phone, so their face is the biggest one: everyone else is "other".
  * - Faces that just pass by, look elsewhere, or are too far away to read the screen don't count:
  *   an "other" face must be turned towards the phone, with eyes open, for [lookMs].
+ * - People are followed by where their face is from one picture to the next (the detector's
+ *   own ids sometimes stop coming, which made it go quiet until restarted).
  * - One alert per person, repeated only if they keep looking after [repeatMs]; never more often
- *   than [cooldownMs] in total (crowds shouldn't make the phone buzz all the time).
+ *   than [cooldownMs] in total.
  *
  * Pure Kotlin so it can be tested on a PC. Not thread safe.
  */
 class OnlookerDetector(
-    private val lookMs: Long = 1_500,
+    private val lookMs: Long = 1_000,
     private val gapMs: Long = 800,
-    private val cooldownMs: Long = 15_000,
-    private val repeatMs: Long = 60_000,
-    private val maxYaw: Float = 25f,
-    private val maxPitch: Float = 25f,
+    private val cooldownMs: Long = 10_000,
+    private val repeatMs: Long = 30_000,
+    private val maxYaw: Float = 30f,
+    private val maxPitch: Float = 30f,
     /** Smaller than this share of the picture's width = too far away to read the screen. */
     private val minWidthShare: Float = 0.05f,
 ) {
-    private val lookingSince = HashMap<Int, Long>()
-    private val lastLooking = HashMap<Int, Long>()
-    private val alertedAt = HashMap<Int, Long>()
+    private class Track(val id: Int, var x: Float, var y: Float, var lastSeen: Long, var lookingSince: Long?, var alertedAt: Long?)
+
+    private val tracks = ArrayList<Track>()
+    private var nextId = 1
     private var lastAlert = Long.MIN_VALUE / 2
 
-    /** Is this face turned towards the phone with its eyes open? */
-    fun isLooking(f: SeenFace, frameWidth: Int): Boolean {
-        if (frameWidth <= 0 || f.width / frameWidth < minWidthShare) return false
-        if (abs(f.yaw) > maxYaw || abs(f.pitch) > maxPitch) return false
+    /** Why a face doesn't count as looking (null = it does). For the log. */
+    fun notLookingBecause(f: SeenFace, frameWidth: Int): String? {
+        if (frameWidth <= 0 || f.width / frameWidth < minWidthShare) return "too far away"
+        if (abs(f.yaw) > maxYaw) return "turned sideways (%.0f°)".format(f.yaw)
+        if (abs(f.pitch) > maxPitch) return "looking up/down (%.0f°)".format(f.pitch)
         val eyes = listOfNotNull(f.leftEyeOpen, f.rightEyeOpen)
-        return eyes.isEmpty() || eyes.max() >= 0.4f
+        if (eyes.isNotEmpty() && eyes.max() < 0.4f) return "eyes closed"
+        return null
     }
+
+    fun isLooking(f: SeenFace, frameWidth: Int): Boolean = notLookingBecause(f, frameWidth) == null
+
+    /** The faces other than the owner (the biggest), minus the owner's own face detected twice. */
+    fun others(faces: List<SeenFace>): List<SeenFace> {
+        val owner = faces.maxByOrNull { it.width } ?: return emptyList()
+        return faces.filter { it !== owner && !owner.contains(it) }
+    }
+
+    /** The faces that count as "someone else looking" in this frame. */
+    fun onlookers(faces: List<SeenFace>, frameWidth: Int): List<SeenFace> = others(faces).filter { isLooking(it, frameWidth) }
 
     /**
      * Feed one frame's faces. Returns true when the user should be warned now.
      * [now] is a monotonic clock in milliseconds.
      */
     fun update(faces: List<SeenFace>, frameWidth: Int, now: Long): Boolean {
-        val owner = faces.maxByOrNull { it.width }
         var alert = false
-        for (f in faces) {
-            if (f === owner) continue
-            // A second box on (or inside) the owner's face is the owner detected twice, not a person
-            if (owner != null && owner.overlaps(f)) continue
-            val id = f.id ?: continue // can't tell if it's the same person over time
-            if (!isLooking(f, frameWidth)) continue
-            lastLooking[id] = now
-            val since = lookingSince.getOrPut(id) { now }
-            val already = alertedAt[id]
-            val due = already == null || now - already >= repeatMs
+        val used = HashSet<Track>()
+        for (f in others(faces)) {
+            // The same person = the nearest face seen a moment ago, not too far from here
+            val near = tracks
+                .filter { it !in used && now - it.lastSeen <= gapMs }
+                .minByOrNull { hypot(it.x - f.centerX, it.y - f.centerY) }
+                ?.takeIf { hypot(it.x - f.centerX, it.y - f.centerY) <= max(f.width, frameWidth * 0.15f) }
+            val t = near ?: Track(nextId++, f.centerX, f.centerY, now, null, null).also { tracks += it }
+            used += t
+            t.x = f.centerX; t.y = f.centerY; t.lastSeen = now
+            if (!isLooking(f, frameWidth)) {
+                t.lookingSince = null
+                continue
+            }
+            val since = t.lookingSince ?: now.also { t.lookingSince = it }
+            val due = t.alertedAt?.let { now - it >= repeatMs } ?: true
             if (now - since >= lookMs && due && now - lastAlert >= cooldownMs) {
                 alert = true
-                alertedAt[id] = now
+                t.alertedAt = now
                 lastAlert = now
             }
         }
-        // Someone who looked away (or left) starts from zero next time
-        val it = lookingSince.keys.iterator()
-        while (it.hasNext()) {
-            val id = it.next()
-            if (now - (lastLooking[id] ?: 0L) > gapMs) {
-                it.remove()
-                lastLooking.remove(id)
-            }
-        }
-        alertedAt.entries.removeAll { now - it.value > max(repeatMs, cooldownMs) * 2 }
+        // People who left (or looked away long enough) start from zero next time
+        tracks.removeAll { now - it.lastSeen > gapMs }
         return alert
     }
 
-    /** The faces that would count as "someone else looking" in this frame (for the log). */
-    fun onlookers(faces: List<SeenFace>, frameWidth: Int): List<SeenFace> {
-        val owner = faces.maxByOrNull { it.width }
-        return faces.filter { it !== owner && !(owner?.overlaps(it) ?: false) && isLooking(it, frameWidth) }
-    }
-
     fun reset() {
-        lookingSince.clear()
-        lastLooking.clear()
-        alertedAt.clear()
+        tracks.clear()
     }
 }
