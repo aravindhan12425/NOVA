@@ -691,16 +691,41 @@ class NovaAccessibilityService : AccessibilityService() {
         android.os.Handler(mainLooper).post {
             if (curtain != null) return@post
             val wm = getSystemService(android.view.WindowManager::class.java)
-            val text = android.widget.TextView(this).apply {
-                text = "Someone may be looking at your screen.\n\nTap to show it again."
+            val shownAt = android.os.SystemClock.uptimeMillis()
+            val dp = resources.displayMetrics.density
+            val title = android.widget.TextView(this).apply {
+                this.text = "Someone may be looking at your screen"
                 setTextColor(android.graphics.Color.WHITE)
-                textSize = 18f
+                textSize = 20f
                 gravity = android.view.Gravity.CENTER
             }
+            val hint = android.widget.TextView(this).apply {
+                this.text = "Nova covered it for you."
+                setTextColor(0xFF9AA3B2.toInt())
+                textSize = 14f
+                gravity = android.view.Gravity.CENTER
+                setPadding(0, (8 * dp).toInt(), 0, (28 * dp).toInt())
+            }
+            // Only this button uncovers the screen: an ordinary tap or scroll must not undo it
+            val button = android.widget.Button(this).apply {
+                this.text = "Show my screen"
+                isAllCaps = false
+                textSize = 16f
+                setOnClickListener {
+                    if (android.os.SystemClock.uptimeMillis() - shownAt > 800) hidePrivacyCurtain()
+                }
+            }
+            val column = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER
+                addView(title)
+                addView(hint)
+                addView(button)
+            }
             val view = android.widget.FrameLayout(this).apply {
-                setBackgroundColor(0xF5000000.toInt())
-                addView(text, android.widget.FrameLayout.LayoutParams(-1, -1))
-                setOnClickListener { hidePrivacyCurtain() }
+                setBackgroundColor(android.graphics.Color.BLACK) // fully black: nothing shows through
+                isClickable = true // swallow touches meant for the app underneath
+                addView(column, android.widget.FrameLayout.LayoutParams(-1, -1))
             }
             val lp = android.view.WindowManager.LayoutParams(
                 android.view.WindowManager.LayoutParams.MATCH_PARENT,

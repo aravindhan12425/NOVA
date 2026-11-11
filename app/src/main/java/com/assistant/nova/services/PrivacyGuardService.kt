@@ -285,7 +285,14 @@ class PrivacyGuardService : LifecycleService() {
         Log.i(TAG, "Someone else is looking at the screen ($faceCount faces in view)")
         runCatching {
             val v = getSystemService(VibratorManager::class.java).defaultVibrator
-            v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 90, 120, 90), -1))
+            val effect = VibrationEffect.createWaveform(longArrayOf(0, 220, 150, 220), -1)
+            // As an alarm: "touch" vibrations are muted when touch feedback is off in Settings
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                v.vibrate(effect, android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_ALARM))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(effect, android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_ALARM).build())
+            }
         }
         NovaAccessibilityService.instance?.showPrivacyCurtain()
         val n = NotificationCompat.Builder(this, CHANNEL_ALERT)

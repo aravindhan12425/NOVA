@@ -22,6 +22,12 @@ import java.io.File
  */
 class DebugCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.hasExtra("cover")) {
+            val svc = com.assistant.nova.services.NovaAccessibilityService.instance
+            if (intent.getBooleanExtra("cover", false)) svc?.showPrivacyCurtain() else svc?.hidePrivacyCurtain()
+            Log.i("NovaDebug", "Cover ${if (intent.getBooleanExtra("cover", false)) "shown" else "hidden"} (service ${svc != null})")
+            return
+        }
         if (intent.getBooleanExtra("support", false)) {
             val pending = goAsync()
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
