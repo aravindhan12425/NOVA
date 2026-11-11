@@ -79,10 +79,10 @@ class AndroidRecognizer(private val context: Context) {
                 ?: SpeechRecognizer.createSpeechRecognizer(context)
         }
 
-    private fun baseIntent(offline: Boolean) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    private fun baseIntent(offline: Boolean, lang: String = language) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
         // Several guesses: Nova picks the first one that is a real command
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, offline)
@@ -142,11 +142,14 @@ class AndroidRecognizer(private val context: Context) {
     private val speechPrefs by lazy { context.getSharedPreferences("nova_speech", Context.MODE_PRIVATE) }
 
     /**
-     * Whether Google's offline speech pack for [language] works (null = not tried yet).
-     * With it, Nova hears accurately with no internet and nothing leaves the phone.
+     * Whether one of Google's offline English packs works (null = not tried yet). With it,
+     * Nova hears accurately with no internet and nothing leaves the phone.
      */
     val offlinePackOk: Boolean?
-        get() = if (speechPrefs.contains("pack_$language")) speechPrefs.getBoolean("pack_$language", false) else null
+        get() = if (speechPrefs.contains("pack_ok")) speechPrefs.getBoolean("pack_ok", false) else null
+
+    /** The offline pack that worked last time, e.g. "en-GB" when English (India) isn't downloaded. */
+    val offlineLanguage: String? get() = speechPrefs.getString("offline_lang", null)
 
     /**
      * Listens on the microphone for one sentence with Google's engine. [offline] = use its
@@ -154,21 +157,38 @@ class AndroidRecognizer(private val context: Context) {
      * phones it has no languages at all and just returns nothing.)
      */
     suspend fun listen(offline: Boolean, onPartial: (String) -> Unit): Result = withContext(Dispatchers.Main) {
-        val sr = create(onDevice = false)
-        try {
-            val r = recognizeOnce(sr, baseIntent(offline).putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true), 15_000, onPartial)
-            if (offline) {
-                val ok = when {
-                    r is Result.Failed && r.code == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> false
-                    r is Result.Failed -> null
-                    else -> true
-                }
-                if (ok != null && ok != offlinePackOk) {
-                    speechPrefs.edit().putBoolean("pack_$language", ok).apply()
-                    Log.i(TAG, "Offline speech pack for $language: ${if (ok) "works" else "missing"}")
-                }
+        if (!offline) return@withContext listenOnce(false, language, onPartial)
+        // Offline: the pack that worked last time first, then English (India), UK, US. A missing
+        // pack answers "language unavailable" within ~0.1 s, so trying the next one costs nothing.
+        for (lang in listOfNotNull(offlineLanguage, language, "en-GB", "en-US").distinct()) {
+            var r = listenOnce(true, lang, onPartial)
+            // Google's service drops the connection if asked again straight away: wait and retry once
+            if (r is Result.Failed && r.code == SpeechRecognizer.ERROR_SERVER_DISCONNECTED) {
+                kotlinx.coroutines.delay(400)
+                r = listenOnce(true, lang, onPartial)
             }
-            r
+            Log.i(TAG, "Offline $lang: ${r::class.simpleName}${if (r is Result.Failed) " ${r.code}" else ""}")
+            if (r is Result.Failed && r.code == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
+                kotlinx.coroutines.delay(250)
+                continue
+            }
+            if (r !is Result.Failed && (offlinePackOk != true || offlineLanguage != lang)) {
+                speechPrefs.edit().putBoolean("pack_ok", true).putString("offline_lang", lang).apply()
+                Log.i(TAG, "Offline speech pack in use: $lang")
+            }
+            return@withContext r
+        }
+        if (offlinePackOk != false) {
+            speechPrefs.edit().putBoolean("pack_ok", false).remove("offline_lang").apply()
+            Log.i(TAG, "No offline English speech pack on this phone")
+        }
+        Result.Failed(SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)
+    }
+
+    private suspend fun listenOnce(offline: Boolean, lang: String, onPartial: (String) -> Unit): Result {
+        val sr = create(onDevice = false)
+        return try {
+            recognizeOnce(sr, baseIntent(offline, lang).putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true), 15_000, onPartial)
         } finally {
             sr.destroy()
         }
